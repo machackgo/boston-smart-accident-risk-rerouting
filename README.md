@@ -15,7 +15,11 @@ This project uses historical Boston accident data, live weather, live traffic co
 
 We uploaded the full Boston crash dataset (47,000+ rows, 2015–2024) from MassDOT to a live REST API — no CSV download needed. The API is built with **FastAPI**, hosted on **Render**, and backed by **Supabase** as the database.
 
-**Live API docs:** https://boston-smart-accident-risk-rerouting.onrender.com/docs
+**Live API base URL:** https://boston-smart-accident-risk-rerouting.onrender.com
+
+**Swagger docs (browser):** https://boston-smart-accident-risk-rerouting.onrender.com/docs
+
+> **Note:** The first request may take **30–60 seconds** due to Render's free tier cold start. Subsequent requests will be fast.
 
 ### Available Endpoints
 
@@ -30,25 +34,61 @@ We uploaded the full Boston crash dataset (47,000+ rows, 2015–2024) from MassD
 | `GET /crashes/filter` | Multi-field filter (year, city, severity, weather) |
 | `GET /stats/by-year` | Aggregated crash counts and injuries per year |
 
-### Example: Use the API in Jupyter
+### Response Shape
+
+All endpoints return a JSON object like:
+
+```json
+{
+  "total_returned": 2,
+  "data": [ { ...crash fields... }, { ...crash fields... } ]
+}
+```
+
+Access the records via `response.json()["data"]`.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+```bash
+pip install requests pandas
+```
+
+### Python Example
 
 ```python
 import requests
+import pandas as pd
 
-BASE = "https://boston-smart-accident-risk-rerouting.onrender.com/docs"
+BASE = "https://boston-smart-accident-risk-rerouting.onrender.com"
+# Note: first request may take 30-60 seconds (Render free tier cold start)
 
-# Get all fatal crashes
+# --- Fatal crashes ---
 response = requests.get(f"{BASE}/crashes/fatal", params={"limit": 50})
-data = response.json()["data"]
+response.raise_for_status()
+fatal_df = pd.DataFrame(response.json()["data"])
+print(f"Fatal crashes returned: {len(fatal_df)}")
+print(fatal_df[["year", "city_town_name", "crash_severity_descr", "weath_cond_descr"]].head())
 
-# Get crashes in 2020 with rain
+# --- Crashes in 2020 with rain ---
 response = requests.get(f"{BASE}/crashes/filter", params={
     "year": 2020,
     "weather": "Rain",
     "limit": 100
 })
-df = pd.DataFrame(response.json()["data"])
-df.head()
+response.raise_for_status()
+rain_df = pd.DataFrame(response.json()["data"])
+print(f"\nRainy crashes in 2020 returned: {len(rain_df)}")
+print(rain_df[["year", "city_town_name", "weath_cond_descr", "crash_severity_descr"]].head())
 ```
+
+A runnable version of this code is in [`examples/quickstart.py`](examples/quickstart.py).
+
+For browser-based exploration, open the [Swagger docs](https://boston-smart-accident-risk-rerouting.onrender.com/docs).
+
+---
 
 No CSV download required — query only what you need, directly into a DataFrame.
