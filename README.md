@@ -63,7 +63,7 @@ pip install requests pandas
 import requests
 import pandas as pd
 
-BASE = "https://boston-smart-accident-risk-rerouting.onrender.com"
+BASE = "https://boston-smart-accident-risk-rerouting.onrender.com/"
 # Note: first request may take 30-60 seconds (Render free tier cold start)
 
 # --- Fatal crashes ---
