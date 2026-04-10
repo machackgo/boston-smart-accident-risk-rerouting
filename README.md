@@ -35,7 +35,7 @@ We uploaded the full Boston crash dataset (47,000+ rows, 2015–2024) from MassD
 ```python
 import requests
 
-BASE = "https://boston-smart-accident-risk-rerouting.onrender.com"
+BASE = "https://boston-smart-accident-risk-rerouting.onrender.com/docs"
 
 # Get all fatal crashes
 response = requests.get(f"{BASE}/crashes/fatal", params={"limit": 50})
