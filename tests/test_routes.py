@@ -31,27 +31,36 @@ def test_fenway_to_logan():
     num_alts = result["num_alternatives"]
 
     print(f"\nDefault Route:")
-    print(f"  Duration : {default['duration_minutes']} minutes")
-    print(f"  Distance : {default['distance_miles']} miles  ({default['distance_km']} km)")
-    print(f"  Polyline : {default['polyline'][:40]}..." if default['polyline'] else "  Polyline : (none)")
+    print(f"  Duration    : {default['duration_minutes']} minutes")
+    print(f"  Distance    : {default['distance_miles']} miles  ({default['distance_km']} km)")
+    print(f"  Polyline    : {default['polyline'][:40]}..." if default['polyline'] else "  Polyline    : (none)")
+    print(f"  Num points  : {default['num_points']}")
+    print(f"  Start       : {default['start_coords']}")
+    print(f"  Midpoint    : {default['midpoint_coords']}")
+    print(f"  End         : {default['end_coords']}")
 
     print(f"\nAlternative Routes: {num_alts}")
     for i, alt in enumerate(alts, 1):
-        print(f"  Alt {i}: {alt['duration_minutes']} min  /  {alt['distance_miles']} miles")
+        print(f"  Alt {i}: {alt['duration_minutes']} min  /  {alt['distance_miles']} miles  |  "
+              f"start={alt['start_coords']}  mid={alt['midpoint_coords']}  end={alt['end_coords']}")
 
     if savings > 0:
         print(f"\nBest alternative saves: {savings} minutes over the default route")
     else:
         print("\nNo faster alternative found (default is already optimal)")
 
-    print("\nFull result dict:")
+    print("\nFull result dict (decoded_points omitted, shown as length):")
     import json
-    # Truncate polylines for readability
+
+    def _summarise(route_dict):
+        d = {k: v for k, v in route_dict.items() if k != "decoded_points"}
+        d["polyline"] = (route_dict["polyline"][:40] + "...") if route_dict["polyline"] else ""
+        d["decoded_points_len"] = route_dict["num_points"]
+        return d
+
     display = {
-        "default_route": {**default, "polyline": default["polyline"][:40] + "..."},
-        "alternative_routes": [
-            {**a, "polyline": a["polyline"][:40] + "..."} for a in alts
-        ],
+        "default_route": _summarise(default),
+        "alternative_routes": [_summarise(a) for a in alts],
         "best_alternative_savings_minutes": savings,
         "num_alternatives": num_alts,
     }

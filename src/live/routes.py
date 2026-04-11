@@ -23,6 +23,7 @@ Usage example:
 
 import os
 import requests
+import polyline as polyline_lib
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -38,6 +39,13 @@ FIELD_MASK = (
     "routes.description,"
     "routes.legs.steps.navigationInstruction"
 )
+
+
+def _decode_polyline(encoded: str) -> list[tuple[float, float]]:
+    """Decode a Google encoded polyline into a list of (lat, lng) tuples."""
+    if not encoded:
+        return []
+    return polyline_lib.decode(encoded)
 
 
 def _build_waypoint(location):
@@ -62,13 +70,31 @@ def _parse_route(route):
     """Extract the standard fields from a single route object."""
     duration_seconds = int(route.get("duration", "0s").rstrip("s"))
     distance_meters = route.get("distanceMeters", 0)
+    encoded = route.get("polyline", {}).get("encodedPolyline", "")
+
+    points = _decode_polyline(encoded)
+    num_points = len(points)
+
+    if points:
+        start_coords  = {"lat": points[0][0],               "lng": points[0][1]}
+        end_coords    = {"lat": points[-1][0],               "lng": points[-1][1]}
+        mid_idx       = num_points // 2
+        midpoint_coords = {"lat": points[mid_idx][0],        "lng": points[mid_idx][1]}
+    else:
+        start_coords = midpoint_coords = end_coords = None
+
     return {
         "duration_seconds": duration_seconds,
         "duration_minutes": round(duration_seconds / 60, 2),
         "distance_meters": distance_meters,
         "distance_km": round(distance_meters / 1000, 3),
         "distance_miles": round(distance_meters / 1609.344, 3),
-        "polyline": route.get("polyline", {}).get("encodedPolyline", ""),
+        "polyline": encoded,
+        "start_coords": start_coords,
+        "midpoint_coords": midpoint_coords,
+        "end_coords": end_coords,
+        "decoded_points": points,
+        "num_points": num_points,
     }
 
 
