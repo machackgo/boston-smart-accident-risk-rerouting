@@ -24,8 +24,11 @@ OpenWeather condition → v2 weath_cond_descr_* mapping:
 import sys
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 import pandas as pd
+
+BOSTON_TZ = ZoneInfo("America/New_York")
 
 # Allow imports from src/ regardless of working directory
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -65,12 +68,27 @@ _WEATHER_FALLBACK = "weath_cond_descr_Not_Reported"
 
 
 def _resolve_time(departure_time):
-    """Return a timezone-aware datetime from an ISO string or current UTC time."""
+    """
+    Return a datetime localised to America/New_York (handles EDT/EST automatically).
+
+    Rules:
+      - None              → current wall-clock time in Boston
+      - aware datetime    → convert to Boston tz
+      - naive datetime    → treat as already Boston local time
+      - aware ISO string  → parse then convert to Boston tz
+      - naive ISO string  → treat as Boston local time
+    """
     if departure_time is None:
-        return datetime.now(tz=timezone.utc)
+        return datetime.now(BOSTON_TZ)
     if isinstance(departure_time, datetime):
-        return departure_time if departure_time.tzinfo else departure_time.replace(tzinfo=timezone.utc)
-    return datetime.fromisoformat(departure_time)
+        if departure_time.tzinfo:
+            return departure_time.astimezone(BOSTON_TZ)
+        return departure_time.replace(tzinfo=BOSTON_TZ)
+    # ISO string
+    dt = datetime.fromisoformat(departure_time)
+    if dt.tzinfo:
+        return dt.astimezone(BOSTON_TZ)
+    return dt.replace(tzinfo=BOSTON_TZ)
 
 
 def _time_features(dt: datetime) -> dict:
@@ -133,6 +151,7 @@ def build_features(origin: str, destination: str, departure_time=None) -> tuple:
         ValueError: If the route API returns no results.
     """
     dt = _resolve_time(departure_time)
+    print(f"[feature_builder] Local Boston time: {dt.strftime('%Y-%m-%d %H:%M %Z')}, hour={dt.hour}")
 
     # ── Step 1: Route (also implicitly geocodes the addresses) ────────────────
     print(f"[feature_builder] Fetching route: '{origin}' → '{destination}' ...")
