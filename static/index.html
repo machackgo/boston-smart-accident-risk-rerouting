@@ -8,31 +8,35 @@
   <style>
     html, body { height: 100%; margin: 0; overflow: hidden; }
     #map { width: 100%; height: 100%; }
-    /* Places Autocomplete dropdown must float above the map */
     .pac-container { z-index: 9999 !important; }
-    /* Probability bar animation */
     .prob-bar { transition: width 0.65s cubic-bezier(.4,0,.2,1); }
-    /* Spinner keyframe */
     @keyframes spin { to { transform: rotate(360deg); } }
     .spin { animation: spin 0.75s linear infinite; }
-    /* Thin scrollbar for sidebar */
     #sidebar::-webkit-scrollbar { width: 4px; }
     #sidebar::-webkit-scrollbar-track { background: transparent; }
     #sidebar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 9px; }
+    .route-card-active { border-color: #3b82f6 !important; background: #eff6ff !important; }
+    .route-card-recommended { position: relative; }
+    .route-card-recommended::before {
+      content: '✅ Recommended';
+      position: absolute; top: -1px; right: -1px;
+      background: #16a34a; color: white;
+      font-size: 9px; font-weight: 700;
+      padding: 2px 7px; border-radius: 0 8px 0 6px;
+      letter-spacing: .04em;
+    }
   </style>
 </head>
 
 <body class="flex flex-col bg-gray-100" style="height:100vh;">
 
-  <!-- ════════════════════════════════════════════════════════════
-       HEADER
-  ═════════════════════════════════════════════════════════════ -->
+  <!-- HEADER -->
   <header class="flex-none bg-gray-900 text-white px-5 py-3 flex items-center justify-between shadow-lg z-30">
     <div class="flex items-center gap-3">
       <div class="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center text-xl shadow-inner">🗺️</div>
       <div>
         <h1 class="font-extrabold text-base leading-tight tracking-tight">Boston Route Risk Predictor</h1>
-        <p class="text-gray-400 text-xs mt-0.5">LightGBM v2 · Per-segment risk · Live weather · Google Maps</p>
+        <p class="text-gray-400 text-xs mt-0.5">LightGBM v2 · Per-segment risk · Route comparison · Live weather</p>
       </div>
     </div>
     <div class="hidden sm:flex items-center gap-2 text-xs text-gray-400 bg-gray-800 px-3 py-1.5 rounded-full">
@@ -41,28 +45,21 @@
     </div>
   </header>
 
-  <!-- ════════════════════════════════════════════════════════════
-       MAIN  (map left ·  sidebar right)
-  ═════════════════════════════════════════════════════════════ -->
+  <!-- MAIN -->
   <div class="flex-1 flex overflow-hidden">
-
-    <!-- Google Map -->
     <div id="map" class="flex-1"></div>
 
-    <!-- ── Sidebar ─────────────────────────────────────────────── -->
+    <!-- SIDEBAR -->
     <div id="sidebar"
          class="w-[390px] flex-none flex flex-col bg-white border-l border-gray-100 shadow-2xl overflow-y-auto z-20">
 
-      <!-- ── Input section ─────────────────────────────────────── -->
+      <!-- Input -->
       <div class="flex-none p-5 bg-gray-50 border-b border-gray-100">
         <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-4">Plan Your Route</p>
-
-        <!-- Origin -->
         <div class="mb-3">
           <label class="block text-xs font-semibold text-gray-500 mb-1.5">From</label>
           <div class="relative">
-            <span class="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-green-500
-                         ring-[3px] ring-green-200 pointer-events-none"></span>
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-green-500 ring-[3px] ring-green-200 pointer-events-none"></span>
             <input id="origin-input" type="text" autocomplete="off"
               placeholder="e.g. Fenway Park, Boston MA"
               class="w-full pl-9 pr-3 py-2.5 bg-white border border-gray-200 rounded-lg text-sm
@@ -70,13 +67,10 @@
                      focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition">
           </div>
         </div>
-
-        <!-- Destination -->
         <div class="mb-4">
           <label class="block text-xs font-semibold text-gray-500 mb-1.5">To</label>
           <div class="relative">
-            <span class="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-red-500
-                         ring-[3px] ring-red-200 pointer-events-none"></span>
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-red-500 ring-[3px] ring-red-200 pointer-events-none"></span>
             <input id="destination-input" type="text" autocomplete="off"
               placeholder="e.g. Boston Logan Airport"
               class="w-full pl-9 pr-3 py-2.5 bg-white border border-gray-200 rounded-lg text-sm
@@ -84,8 +78,6 @@
                      focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition">
           </div>
         </div>
-
-        <!-- Predict button -->
         <button id="predict-btn" onclick="predictRisk()"
           class="w-full bg-blue-600 hover:bg-blue-700 active:scale-[.98] disabled:opacity-60
                  text-white font-bold py-2.5 rounded-lg shadow
@@ -94,25 +86,21 @@
           <span id="btn-icon">🔍</span>
           <span id="btn-label">Predict Route Risk</span>
         </button>
-
-        <!-- Try example link -->
         <button onclick="tryExample()"
           class="w-full mt-2 text-xs text-blue-500 hover:text-blue-700 py-1 transition-colors">
           Try example: Fenway Park → Logan Airport ↗
         </button>
       </div>
 
-      <!-- ── Dynamic section (one state shown at a time) ────────── -->
+      <!-- Dynamic states -->
 
       <!-- Placeholder -->
       <div id="state-placeholder" class="flex flex-col items-center justify-center py-16 px-8 text-center">
         <div class="w-20 h-20 rounded-3xl bg-blue-50 flex items-center justify-center text-4xl mb-5 shadow-inner">🚗</div>
         <p class="text-sm font-bold text-gray-700 mb-2">Ready to predict</p>
         <p class="text-xs text-gray-400 leading-relaxed">
-          Enter an origin and destination above, then click <strong>Predict Route Risk</strong>.
-          We sample 12 points along your route, run per-segment ML predictions, and color the map green → yellow → red by risk.
+          Enter a route above. We'll analyze every available route, predict risk at 12 points each, and recommend the safest option.
         </p>
-        <!-- Legend -->
         <div class="mt-6 w-full bg-gray-50 rounded-xl p-3">
           <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-2">Route Color Legend</p>
           <div class="flex items-center gap-3 justify-center text-xs font-semibold">
@@ -127,10 +115,9 @@
       <div id="state-loading" style="display:none;"
            class="flex flex-col items-center justify-center py-16 px-8 text-center">
         <div class="w-14 h-14 rounded-full border-4 border-blue-200 border-t-blue-600 spin mb-6"></div>
-        <p class="text-sm font-bold text-gray-700 mb-1">Analyzing route risk…</p>
-        <p class="text-xs text-gray-400">Calling Google Maps · OpenWeather · LightGBM</p>
-        <p class="text-xs text-gray-300 mt-3">Predicting risk at 12 points along your route</p>
-        <p class="text-xs text-gray-300 mt-1">First request may take ~30 s on cold start</p>
+        <p class="text-sm font-bold text-gray-700 mb-1">Analyzing all routes…</p>
+        <p class="text-xs text-gray-400">Google Maps · OpenWeather · LightGBM · Reverse Geocoding</p>
+        <p class="text-xs text-gray-300 mt-3">First request may take ~30 s on cold start</p>
       </div>
 
       <!-- Error -->
@@ -151,7 +138,16 @@
       <!-- Results -->
       <div id="state-results" style="display:none;" class="p-5 space-y-5">
 
-        <!-- ── Risk card ────────────────────────────────────────── -->
+        <!-- ── Compare Routes panel (hidden when only 1 route) ── -->
+        <div id="compare-panel" style="display:none;">
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-2">Compare Routes</p>
+          <!-- recommendation reason -->
+          <div id="rec-reason" class="text-xs text-blue-700 bg-blue-50 rounded-xl px-3 py-2 mb-3 leading-relaxed"></div>
+          <!-- route cards -->
+          <div id="route-cards" class="space-y-2"></div>
+        </div>
+
+        <!-- ── Active route risk card ── -->
         <div id="risk-card" class="rounded-2xl p-5 text-white shadow-lg">
           <p class="text-[10px] font-bold opacity-70 uppercase tracking-[.15em] mb-3">Overall Route Risk</p>
           <div class="flex items-end justify-between">
@@ -167,21 +163,19 @@
           </div>
         </div>
 
-        <!-- ── Probability bars ─────────────────────────────────── -->
+        <!-- ── Probability bars ── -->
         <div class="bg-gray-50 rounded-2xl p-4">
           <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-3">Average Class Probabilities</p>
           <div id="prob-bars" class="space-y-3"></div>
         </div>
 
-        <!-- ── Risk Hotspots ────────────────────────────────────── -->
+        <!-- ── Hotspot list ── -->
         <div class="rounded-2xl border border-gray-100 overflow-hidden">
-          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] px-4 pt-4 pb-2">
-            ⚠️ Risk Hotspots
-          </p>
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] px-4 pt-4 pb-2">⚠️ Risk Hotspots</p>
           <div id="hotspot-list" class="px-4 pb-4"></div>
         </div>
 
-        <!-- ── Route Color Legend ───────────────────────────────── -->
+        <!-- ── Legend ── -->
         <div class="bg-gray-50 rounded-2xl p-4">
           <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-3">Route Color Legend</p>
           <div class="flex items-center gap-4 text-xs font-semibold">
@@ -191,25 +185,24 @@
           </div>
         </div>
 
-        <!-- ── Route details ────────────────────────────────────── -->
+        <!-- ── Route details ── -->
         <div>
           <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-3">Route Details</p>
           <div id="route-grid" class="grid grid-cols-2 gap-2.5"></div>
         </div>
 
-        <!-- ── Weather ──────────────────────────────────────────── -->
+        <!-- ── Weather ── -->
         <div class="bg-gray-50 rounded-2xl p-4">
           <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-3">Weather at Route Midpoint</p>
           <div id="weather-grid" class="space-y-2"></div>
         </div>
 
-        <!-- ── Model context ────────────────────────────────────── -->
+        <!-- ── Context ── -->
         <div class="bg-gray-50 rounded-2xl p-4">
           <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-3">Model Context</p>
           <div id="ctx-grid" class="space-y-2"></div>
         </div>
 
-        <!-- New prediction button -->
         <button onclick="resetForNewPrediction()"
           class="w-full text-xs text-blue-500 hover:text-blue-700 py-2 transition-colors font-medium">
           ← New prediction
@@ -219,11 +212,8 @@
     </div><!-- /sidebar -->
   </div><!-- /main -->
 
-  <!-- ════════════════════════════════════════════════════════════
-       FOOTER
-  ═════════════════════════════════════════════════════════════ -->
-  <footer class="flex-none bg-gray-900 text-gray-500 text-xs px-5 py-2
-                 flex items-center justify-between gap-4">
+  <!-- FOOTER -->
+  <footer class="flex-none bg-gray-900 text-gray-500 text-xs px-5 py-2 flex items-center justify-between gap-4">
     <span class="truncate">Mohammed Mubashir Uddin Faraz · Data Detectives</span>
     <a href="https://github.com/machackgo/boston-smart-accident-risk-rerouting"
        target="_blank" rel="noopener noreferrer"
@@ -248,19 +238,14 @@
   <script>
   'use strict';
 
-  // ── Risk configuration ─────────────────────────────────────────
   const RISK = {
     Low:    { icon: '✅', label: 'Low Risk',    color: '#22c55e',
-              gradient: 'linear-gradient(135deg,#16a34a,#22c55e)',
-              barColor: '#22c55e' },
+              gradient: 'linear-gradient(135deg,#16a34a,#22c55e)', barColor: '#22c55e' },
     Medium: { icon: '⚠️',  label: 'Medium Risk', color: '#eab308',
-              gradient: 'linear-gradient(135deg,#ca8a04,#eab308)',
-              barColor: '#eab308' },
+              gradient: 'linear-gradient(135deg,#ca8a04,#eab308)', barColor: '#eab308' },
     High:   { icon: '🚨', label: 'High Risk',   color: '#ef4444',
-              gradient: 'linear-gradient(135deg,#dc2626,#ef4444)',
-              barColor: '#ef4444' },
+              gradient: 'linear-gradient(135deg,#dc2626,#ef4444)', barColor: '#ef4444' },
   };
-
   const WEATHER_ICONS = {
     Clear:'☀️', Clouds:'☁️', Rain:'🌧️', Drizzle:'🌦️',
     Snow:'❄️', Thunderstorm:'⛈️', Fog:'🌫️', Mist:'🌫️',
@@ -269,14 +254,17 @@
 
   // ── Map state ──────────────────────────────────────────────────
   let map;
-  let segmentPolylines = [];   // colored per-segment polylines
-  let altPolylines = [];
-  let originMarker = null;
-  let destMarker = null;
-  let hotspotMarkers = [];     // red markers at High-risk hotspots
-  let openInfoWindow = null;   // track open info window so we can close it
+  let segmentPolylines = [];
+  let altRoutePolylines = [];   // dashed gray lines for inactive routes
+  let originMarker = null, destMarker = null;
+  let hotspotMarkers = [];
+  let openInfoWindow = null;
 
-  // ── initMap (Google Maps JS API callback) ──────────────────────
+  // ── App state ──────────────────────────────────────────────────
+  let _lastData = null;           // full API response
+  let _activeRouteIdx = null;     // index field of the currently displayed route
+
+  // ── initMap ────────────────────────────────────────────────────
   function initMap() {
     map = new google.maps.Map(document.getElementById('map'), {
       center: { lat: 42.3601, lng: -71.0589 },
@@ -290,8 +278,6 @@
         { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'off' }] },
       ],
     });
-
-    // Places Autocomplete — biased to Boston metro area
     const bostonBounds = new google.maps.LatLngBounds(
       new google.maps.LatLng(42.15, -71.35),
       new google.maps.LatLng(42.55, -70.80)
@@ -304,8 +290,6 @@
     };
     new google.maps.places.Autocomplete(document.getElementById('origin-input'),      acOpts);
     new google.maps.places.Autocomplete(document.getElementById('destination-input'), acOpts);
-
-    // Enter key submits
     ['origin-input', 'destination-input'].forEach(id =>
       document.getElementById(id).addEventListener('keydown', e => {
         if (e.key === 'Enter') { e.preventDefault(); predictRisk(); }
@@ -315,7 +299,6 @@
 
   // ── State management ───────────────────────────────────────────
   const STATES = ['placeholder', 'loading', 'error', 'results'];
-
   function showState(name) {
     STATES.forEach(s => {
       const el = document.getElementById('state-' + s);
@@ -328,29 +311,27 @@
       }
     });
   }
-
   function resetForNewPrediction() {
     showState('placeholder');
     clearMap();
+    _lastData = null;
+    _activeRouteIdx = null;
   }
 
   // ── Map helpers ────────────────────────────────────────────────
   function clearMap() {
-    segmentPolylines.forEach(p => p.setMap(null));
-    segmentPolylines = [];
-    altPolylines.forEach(p => p.setMap(null));
-    altPolylines = [];
+    segmentPolylines.forEach(p => p.setMap(null)); segmentPolylines = [];
+    altRoutePolylines.forEach(p => p.setMap(null)); altRoutePolylines = [];
     if (originMarker) { originMarker.setMap(null); originMarker = null; }
     if (destMarker)   { destMarker.setMap(null);   destMarker   = null; }
-    hotspotMarkers.forEach(m => m.setMap(null));
-    hotspotMarkers = [];
+    hotspotMarkers.forEach(m => m.setMap(null)); hotspotMarkers = [];
     if (openInfoWindow) { openInfoWindow.close(); openInfoWindow = null; }
   }
 
-  function circleIcon(fillColor) {
+  function circleIcon(fillColor, scale = 9) {
     return {
       path: google.maps.SymbolPath.CIRCLE,
-      scale: 9,
+      scale,
       fillColor,
       fillOpacity: 1,
       strokeColor: '#ffffff',
@@ -359,137 +340,192 @@
   }
 
   /**
-   * Draw the route as per-segment colored polylines.
-   *
-   * decoded_points: array of [lat, lng] from the API response.
-   * segments: array of segment objects with polyline_index and risk_class.
-   *
-   * For each pair of consecutive segments (i, i+1), we slice decoded_points
-   * from segments[i].polyline_index to segments[i+1].polyline_index (inclusive)
-   * and draw that sub-path colored by segments[i].risk_class.
+   * Draw ONE route's colored segment polylines + High-risk hotspot markers.
+   * Also draws all other routes as faint dashed gray lines.
    */
-  function drawSegmentedRoute(data) {
+  function drawRoute(routeObj, allRoutes) {
     clearMap();
-    if (!map || !data.route) return;
+    if (!map || !routeObj) return;
 
-    const decoded = data.route.decoded_points;   // [[lat,lng], ...]
-    const segs    = data.segments;
+    const decoded = routeObj.decoded_points;
+    const segs    = routeObj.segments;
 
-    if (!decoded || decoded.length === 0 || !segs || segs.length < 2) {
-      // Fallback: draw single polyline with overall risk color if no segments
-      if (data.route.polyline) {
-        let path = [];
-        try { path = google.maps.geometry.encoding.decodePath(data.route.polyline); } catch(e) {}
-        if (path.length > 0) {
-          const cfg = RISK[data.risk_class] || RISK.Medium;
-          segmentPolylines.push(new google.maps.Polyline({
-            path, strokeColor: cfg.color, strokeOpacity: 0.95, strokeWeight: 5, zIndex: 10, map,
-          }));
-        }
-      }
-    } else {
-      // Draw n-1 colored sub-paths (segment i covers pts from segs[i] to segs[i+1])
+    // ── Inactive routes: dashed gray ─────────────────────────────
+    (allRoutes || []).forEach(r => {
+      if (r.index === routeObj.index) return;
+      if (!r.decoded_points || r.decoded_points.length === 0) return;
+      const path = r.decoded_points.map(pt => ({ lat: pt[0], lng: pt[1] }));
+      altRoutePolylines.push(new google.maps.Polyline({
+        path,
+        strokeOpacity: 0,
+        strokeWeight:  3,
+        zIndex:        3,
+        map,
+        icons: [{ icon: { path:'M 0,-1 0,1', strokeOpacity: 0.3, strokeColor:'#94a3b8', scale: 2.5 },
+                  offset: '0', repeat: '14px' }],
+      }));
+    });
+
+    // ── Active route: colored segments ───────────────────────────
+    if (decoded && decoded.length > 1 && segs && segs.length >= 2) {
       for (let i = 0; i < segs.length - 1; i++) {
+        const color    = (RISK[segs[i].risk_class] || RISK.Medium).color;
         const startIdx = segs[i].polyline_index;
         const endIdx   = segs[i + 1].polyline_index;
-        const color    = (RISK[segs[i].risk_class] || RISK.Medium).color;
-
-        const subPath = [];
+        const subPath  = [];
         for (let j = startIdx; j <= endIdx; j++) {
           subPath.push({ lat: decoded[j][0], lng: decoded[j][1] });
         }
         if (subPath.length < 2) continue;
-
         segmentPolylines.push(new google.maps.Polyline({
-          path:          subPath,
-          strokeColor:   color,
-          strokeOpacity: 0.95,
-          strokeWeight:  5,
-          zIndex:        10,
-          map,
+          path: subPath, strokeColor: color,
+          strokeOpacity: 0.95, strokeWeight: 5, zIndex: 10, map,
+        }));
+      }
+    } else if (routeObj.polyline) {
+      // Fallback: single color
+      let path = [];
+      try { path = google.maps.geometry.encoding.decodePath(routeObj.polyline); } catch(e) {}
+      if (path.length > 0) {
+        const color = (RISK[routeObj.overall_risk_class] || RISK.Medium).color;
+        segmentPolylines.push(new google.maps.Polyline({
+          path, strokeColor: color, strokeOpacity: 0.95, strokeWeight: 5, zIndex: 10, map,
         }));
       }
     }
 
-    // Fit map bounds
-    const bounds = new google.maps.LatLngBounds();
-    decoded.forEach(pt => bounds.extend({ lat: pt[0], lng: pt[1] }));
-    map.fitBounds(bounds, { top: 80, right: 40, bottom: 80, left: 40 });
+    // ── Fit bounds ────────────────────────────────────────────────
+    if (decoded && decoded.length > 0) {
+      const bounds = new google.maps.LatLngBounds();
+      decoded.forEach(pt => bounds.extend({ lat: pt[0], lng: pt[1] }));
+      map.fitBounds(bounds, { top: 80, right: 40, bottom: 80, left: 40 });
 
-    // Origin (green) + destination (red) markers
-    const first = decoded[0];
-    const last  = decoded[decoded.length - 1];
-    originMarker = new google.maps.Marker({ position: { lat: first[0], lng: first[1] }, map, icon: circleIcon('#22c55e'), zIndex: 20, title: 'Origin' });
-    destMarker   = new google.maps.Marker({ position: { lat: last[0],  lng: last[1]  }, map, icon: circleIcon('#ef4444'), zIndex: 20, title: 'Destination' });
+      const first = decoded[0], last = decoded[decoded.length - 1];
+      originMarker = new google.maps.Marker({ position: { lat: first[0], lng: first[1] }, map, icon: circleIcon('#22c55e'), zIndex: 20, title: 'Origin' });
+      destMarker   = new google.maps.Marker({ position: { lat: last[0],  lng: last[1]  }, map, icon: circleIcon('#ef4444'), zIndex: 20, title: 'Destination' });
+    }
 
-    // High-risk hotspot markers with info windows
-    (data.hotspots || []).filter(h => h.risk_class === 'High').forEach(h => {
+    // ── High-risk hotspot markers ─────────────────────────────────
+    (routeObj.hotspots || []).filter(h => h.risk_class === 'High').forEach(h => {
       const marker = new google.maps.Marker({
         position: { lat: h.lat, lng: h.lng },
         map,
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          scale: 10,
-          fillColor: '#ef4444',
-          fillOpacity: 0.9,
-          strokeColor: '#ffffff',
-          strokeWeight: 2,
-        },
+        icon: circleIcon('#ef4444', 10),
         zIndex: 30,
         title: `High Risk — ${(h.confidence * 100).toFixed(1)}%`,
       });
-
-      const infoWindow = new google.maps.InfoWindow({
+      const label = h.short_label
+        ? `<b style="color:#555;">${h.short_label}</b><br>`
+        : '';
+      const iw = new google.maps.InfoWindow({
         content: `
-          <div style="font-family:sans-serif;font-size:13px;padding:4px 2px;min-width:160px;">
+          <div style="font-family:sans-serif;font-size:13px;padding:4px 2px;min-width:170px;">
             <b style="color:#ef4444;">🚨 High Risk Segment</b><br>
+            ${label}
             <span style="color:#555;">${h.distance_from_start_miles} mi from start</span><br>
             <span style="color:#333;">Confidence: <b>${(h.confidence * 100).toFixed(1)}%</b></span>
           </div>`,
       });
-
       marker.addListener('click', () => {
         if (openInfoWindow) openInfoWindow.close();
-        infoWindow.open(map, marker);
-        openInfoWindow = infoWindow;
+        iw.open(map, marker);
+        openInfoWindow = iw;
       });
-
       hotspotMarkers.push(marker);
-    });
-
-    // Alternative routes (dashed gray)
-    (data.route.alternative_polylines || []).forEach(enc => {
-      if (!enc) return;
-      let altPath = [];
-      try { altPath = google.maps.geometry.encoding.decodePath(enc); } catch (e) {}
-      if (altPath.length === 0) return;
-      altPolylines.push(new google.maps.Polyline({
-        path: altPath,
-        strokeOpacity: 0,
-        strokeWeight:  4,
-        zIndex:        5,
-        map,
-        icons: [{ icon: { path:'M 0,-1 0,1', strokeOpacity: 0.45, strokeColor:'#94a3b8', scale: 3 },
-                  offset: '0', repeat: '14px' }],
-      }));
     });
   }
 
-  // ── Results panel ──────────────────────────────────────────────
-  function populateResults(data) {
-    const cfg = RISK[data.risk_class] || RISK.Medium;
+  // ── Route switcher ─────────────────────────────────────────────
+  function showRoute(routeIdx) {
+    if (!_lastData) return;
+    _activeRouteIdx = routeIdx;
+
+    const routeObj = _lastData.routes.find(r => r.index === routeIdx);
+    if (!routeObj) return;
+
+    // Redraw map
+    drawRoute(routeObj, _lastData.routes);
+
+    // Update results panel for this route
+    updateResultsPanel(routeObj, _lastData);
+
+    // Highlight active card
+    document.querySelectorAll('.route-card').forEach(card => {
+      const idx = parseInt(card.dataset.routeIdx);
+      if (idx === routeIdx) {
+        card.classList.add('route-card-active');
+      } else {
+        card.classList.remove('route-card-active');
+      }
+    });
+  }
+
+  // ── Build comparison cards ─────────────────────────────────────
+  function buildComparePanel(data) {
+    if (data.routes.length <= 1) {
+      document.getElementById('compare-panel').style.display = 'none';
+      return;
+    }
+
+    document.getElementById('compare-panel').style.display = 'block';
+    document.getElementById('rec-reason').textContent = '💡 ' + (data.recommendation_reason || '');
+
+    const container = document.getElementById('route-cards');
+    container.innerHTML = '';
+
+    data.routes.forEach(r => {
+      const isRec    = r.index === data.recommended_route_index;
+      const cfg      = RISK[r.overall_risk_class] || RISK.Medium;
+      const isActive = r.index === _activeRouteIdx;
+
+      const hotspotSummary = r.num_hotspots === 0
+        ? '<span class="text-green-600 font-semibold">No hotspots</span>'
+        : `<span class="${r.num_high_hotspots > 0 ? 'text-red-600' : 'text-yellow-600'} font-semibold">`
+          + `${r.num_hotspots} hotspot${r.num_hotspots !== 1 ? 's' : ''}`
+          + (r.num_high_hotspots > 0 ? ` (${r.num_high_hotspots} high)` : '')
+          + `</span>`;
+
+      const card = document.createElement('div');
+      card.className = 'route-card border-2 rounded-xl p-3 cursor-pointer transition-all '
+        + (isRec ? 'route-card-recommended ' : '')
+        + (isActive ? 'route-card-active border-blue-400 bg-blue-50 ' : 'border-gray-200 bg-white hover:border-gray-300 ');
+      card.dataset.routeIdx = r.index;
+      card.innerHTML = `
+        <div class="flex items-start justify-between gap-2 mb-2">
+          <div>
+            <p class="text-xs font-bold text-gray-800">${r.label}</p>
+            <p class="text-[11px] text-gray-400">${r.duration_minutes} min · ${r.distance_miles} mi</p>
+          </div>
+          <span class="flex-none text-[11px] font-bold px-2 py-0.5 rounded-full text-white"
+                style="background:${cfg.color}">${r.overall_risk_class}</span>
+        </div>
+        <div class="text-[11px] text-gray-500 mb-2">${hotspotSummary}</div>
+        <button onclick="showRoute(${r.index})"
+          class="w-full text-[11px] font-semibold py-1.5 rounded-lg border transition-all
+                 ${isActive
+                   ? 'bg-blue-600 text-white border-blue-600'
+                   : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50'}">
+          ${isActive ? '✓ Showing' : 'Show this route'}
+        </button>`;
+      container.appendChild(card);
+    });
+  }
+
+  // ── Update results panel for active route ──────────────────────
+  function updateResultsPanel(routeObj, data) {
+    const cfg = RISK[routeObj.overall_risk_class] || RISK.Medium;
     const ctx = data.context || {};
 
     // Risk card
-    document.getElementById('risk-card').style.background  = cfg.gradient;
-    document.getElementById('risk-icon-big').textContent   = cfg.icon;
-    document.getElementById('risk-label-big').textContent  = cfg.label;
-    document.getElementById('risk-sublabel').textContent   =
-      `Worst case across ${ctx.num_segments_analyzed || '?'} segments`;
+    document.getElementById('risk-card').style.background = cfg.gradient;
+    document.getElementById('risk-icon-big').textContent  = cfg.icon;
+    document.getElementById('risk-label-big').textContent = cfg.label;
+    document.getElementById('risk-sublabel').textContent  =
+      routeObj.label + ' · ' + ctx.num_segments_per_route + ' segments analyzed';
     document.getElementById('risk-confidence').textContent =
-      (data.overall_confidence * 100).toFixed(1) + '%';
+      (routeObj.overall_confidence * 100).toFixed(1) + '%';
 
-    // Probability bars (averaged across segments)
+    // Probability bars
     const probsEl = document.getElementById('prob-bars');
     probsEl.innerHTML = '';
     [
@@ -497,7 +533,7 @@
       { cls: 'Medium', color: '#eab308' },
       { cls: 'High',   color: '#ef4444' },
     ].forEach(({ cls, color }) => {
-      const pct = ((data.overall_probabilities[cls] || 0) * 100).toFixed(1);
+      const pct = ((routeObj.overall_probabilities[cls] || 0) * 100).toFixed(1);
       probsEl.insertAdjacentHTML('beforeend', `
         <div>
           <div class="flex justify-between items-baseline mb-1">
@@ -516,7 +552,7 @@
 
     // Hotspot list
     const hotspotEl = document.getElementById('hotspot-list');
-    const hotspots  = data.hotspots || [];
+    const hotspots  = routeObj.hotspots || [];
     if (hotspots.length === 0) {
       hotspotEl.innerHTML = `
         <div class="flex items-center gap-2 text-xs text-green-700 bg-green-50 rounded-xl px-3 py-2.5">
@@ -525,32 +561,27 @@
         </div>`;
     } else {
       hotspotEl.innerHTML = hotspots.map(h => {
-        const hcfg = RISK[h.risk_class] || RISK.Medium;
-        const bgCls = h.risk_class === 'High'
-          ? 'bg-red-50 border-red-100'
-          : 'bg-yellow-50 border-yellow-100';
-        const textCls = h.risk_class === 'High' ? 'text-red-700' : 'text-yellow-700';
+        const hcfg  = RISK[h.risk_class] || RISK.Medium;
+        const bgCls = h.risk_class === 'High' ? 'bg-red-50 border-red-100' : 'bg-yellow-50 border-yellow-100';
+        const txtCls = h.risk_class === 'High' ? 'text-red-700' : 'text-yellow-700';
+        const loc   = h.short_label ? `<span class="text-gray-400"> · ${h.short_label}</span>` : '';
         return `
           <div class="flex items-center gap-2.5 border rounded-xl px-3 py-2 mb-2 ${bgCls}">
             <span class="text-base flex-none">${hcfg.icon}</span>
             <div class="flex-1 min-w-0">
-              <p class="text-xs font-bold ${textCls}">${h.distance_from_start_miles} mi from start — ${h.risk_class} risk</p>
-              <p class="text-[11px] text-gray-500">${(h.confidence * 100).toFixed(1)}% confidence</p>
+              <p class="text-xs font-bold ${txtCls}">${h.distance_from_start_miles} mi from start — ${h.risk_class} risk${loc}</p>
+              <p class="text-[11px] text-gray-500">${(h.confidence * 100).toFixed(1)}% confidence · ~${h.estimated_minutes_from_start} min in</p>
             </div>
           </div>`;
       }).join('');
     }
 
-    // Route grid
-    const r = data.route;
+    // Route details
     document.getElementById('route-grid').innerHTML = `
-      ${card('🕐', 'Duration',     r.duration_minutes + ' min')}
-      ${card('📍', 'Distance',     r.distance_miles   + ' mi')}
-      ${card('🔀', 'Alternatives', r.num_alternatives)}
-      ${card('⏱️', 'Best alt saves',
-          r.best_alternative_savings_minutes > 0
-            ? '<span class="text-green-600">' + r.best_alternative_savings_minutes + ' min</span>'
-            : '<span class="text-gray-400">—</span>')}`;
+      ${card('🕐', 'Duration',      routeObj.duration_minutes + ' min')}
+      ${card('📍', 'Distance',      routeObj.distance_miles + ' mi')}
+      ${card('⚠️', 'Hotspots',       routeObj.num_hotspots)}
+      ${card('🔴', 'High-risk segs', routeObj.num_high_hotspots || 0)}`;
 
     // Weather
     const w = data.weather;
@@ -569,16 +600,31 @@
 
     // Context
     document.getElementById('ctx-grid').innerHTML = `
-      ${row('Boston time',     String(ctx.local_hour || 0).padStart(2,'0') + ':xx EDT')}
-      ${row('Segments analyzed', ctx.num_segments_analyzed || '?')}
-      ${row('Hotspots found',   ctx.num_hotspots || 0)}
+      ${row('Boston time',       String(ctx.local_hour || 0).padStart(2,'0') + ':xx EDT')}
+      ${row('Routes analyzed',   ctx.num_routes_analyzed || 1)}
+      ${row('Segments/route',    ctx.num_segments_per_route || 12)}
       <div class="pt-1">
         <span class="text-xs text-gray-400">Weather mapping</span>
         <p class="text-xs font-semibold text-gray-700 mt-0.5 break-all">${ctx.weather_mapping_used || ''}</p>
       </div>`;
   }
 
-  // ── Small template helpers ─────────────────────────────────────
+  // ── Populate full results (first render) ───────────────────────
+  function populateResults(data) {
+    _lastData = data;
+
+    // Determine which route to show initially: the recommended one
+    _activeRouteIdx = data.recommended_route_index;
+
+    const activeRoute = data.routes.find(r => r.index === _activeRouteIdx)
+      || data.routes[0];
+
+    buildComparePanel(data);
+    updateResultsPanel(activeRoute, data);
+    drawRoute(activeRoute, data.routes);
+  }
+
+  // ── Template helpers ───────────────────────────────────────────
   function card(icon, label, value) {
     return `<div class="bg-white border border-gray-100 rounded-xl p-3 shadow-sm">
       <p class="text-[10px] text-gray-400 mb-1">${icon} ${label}</p>
@@ -596,19 +642,16 @@
   async function predictRisk() {
     const origin      = document.getElementById('origin-input').value.trim();
     const destination = document.getElementById('destination-input').value.trim();
-
     if (!origin || !destination) {
       alert('Please enter both a starting point and a destination.');
       return;
     }
 
-    // Set button to loading state
     const btn = document.getElementById('predict-btn');
     btn.disabled = true;
     document.getElementById('btn-spinner').classList.remove('hidden');
     document.getElementById('btn-icon').classList.add('hidden');
     document.getElementById('btn-label').textContent = 'Analyzing…';
-
     showState('loading');
 
     try {
@@ -620,7 +663,6 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || `Server error (HTTP ${res.status})`);
 
-      drawSegmentedRoute(data);
       populateResults(data);
       showState('results');
 
@@ -635,7 +677,6 @@
     }
   }
 
-  // ── Try example helper ─────────────────────────────────────────
   function tryExample() {
     document.getElementById('origin-input').value      = 'Fenway Park, Boston, MA';
     document.getElementById('destination-input').value = 'Boston Logan International Airport, MA';

@@ -112,3 +112,94 @@ def geocode(address: str) -> dict:
         "place_id": result["place_id"],
         "location_type": result["geometry"]["location_type"],
     }
+
+
+def reverse_geocode(lat: float, lng: float) -> dict:
+    """
+    Convert geographic coordinates to a human-readable street address.
+
+    Args:
+        lat (float): Latitude.
+        lng (float): Longitude.
+
+    Returns:
+        dict: {
+            "street_name":       str | None,  # e.g. "Massachusetts Ave"
+            "neighborhood":      str | None,  # e.g. "Back Bay"
+            "short_label":       str,         # e.g. "Massachusetts Ave, Back Bay"
+            "formatted_address": str,         # full Google address string
+        }
+
+    Raises:
+        EnvironmentError: If GOOGLE_MAPS_API_KEY is not set.
+        requests.ConnectionError: On network errors.
+        requests.HTTPError: On non-200 HTTP responses.
+        ValueError: If Google returns ZERO_RESULTS.
+    """
+    api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
+    if not api_key:
+        raise EnvironmentError(
+            "GOOGLE_MAPS_API_KEY not found. "
+            f"Make sure it is set in {_ENV_PATH}"
+        )
+
+    params = {
+        "latlng": f"{lat},{lng}",
+        "key": api_key,
+    }
+
+    try:
+        resp = requests.get(GEOCODING_API_URL, params=params, timeout=10)
+    except requests.ConnectionError as e:
+        raise requests.ConnectionError(f"Network error reaching Google Geocoding API: {e}")
+
+    if not resp.ok:
+        try:
+            msg = resp.json().get("error_message", resp.text)
+        except Exception:
+            msg = resp.text
+        raise requests.HTTPError(
+            f"Google Geocoding API returned HTTP {resp.status_code}: {msg}"
+        )
+
+    data = resp.json()
+    status = data.get("status")
+
+    if status == "ZERO_RESULTS":
+        raise ValueError(f"Reverse geocode returned no results for ({lat}, {lng}).")
+
+    if status != "OK":
+        raise ValueError(
+            f"Reverse geocode returned status '{status}' for ({lat}, {lng}): "
+            f"{data.get('error_message', '')}"
+        )
+
+    # Pick the most detailed result (first in list)
+    result = data["results"][0]
+    components = result.get("address_components", [])
+
+    def _get(types):
+        """Return the long_name of the first component matching any of types."""
+        for c in components:
+            if any(t in c.get("types", []) for t in types):
+                return c["long_name"]
+        return None
+
+    street_name  = _get(["route"])
+    neighborhood = _get(["neighborhood", "sublocality_level_1", "sublocality"])
+
+    if street_name and neighborhood:
+        short_label = f"{street_name}, {neighborhood}"
+    elif street_name:
+        short_label = street_name
+    elif neighborhood:
+        short_label = neighborhood
+    else:
+        short_label = result.get("formatted_address", f"{lat:.4f}, {lng:.4f}")
+
+    return {
+        "street_name":       street_name,
+        "neighborhood":      neighborhood,
+        "short_label":       short_label,
+        "formatted_address": result.get("formatted_address", ""),
+    }
