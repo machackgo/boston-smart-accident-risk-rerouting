@@ -4,3 +4,9 @@ supabase
 python-dotenv
 requests
 polyline
+pandas
+numpy
+scikit-learn
+joblib
+lightgbm
+matplotlib
