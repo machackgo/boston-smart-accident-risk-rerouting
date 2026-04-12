@@ -106,6 +106,8 @@ def predict_route_risk(origin: str, destination: str, departure_time=None) -> di
             "distance_miles":                    default_leg["distance_miles"],
             "num_alternatives":                  route_raw["num_alternatives"],
             "best_alternative_savings_minutes":  route_raw["best_alternative_savings_minutes"],
+            "polyline":                          default_leg.get("polyline", ""),
+            "alternative_polylines":             [a.get("polyline", "") for a in route_raw["alternative_routes"]],
         },
         "weather": {
             "condition":          weather_raw["condition"],

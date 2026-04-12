@@ -5,6 +5,7 @@ Docs: http://localhost:8000/docs
 """
 
 import sys
+import os
 from pathlib import Path
 
 # Ensure repo root is on sys.path so src.predict.predictor is importable
@@ -15,6 +16,8 @@ if str(_REPO_ROOT) not in sys.path:
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from supabase import create_client
 from typing import Optional
@@ -45,6 +48,15 @@ class PredictRequest(BaseModel):
     departure_time: Optional[str] = None  # ISO 8601, e.g. "2024-10-15T08:00:00Z"
 
 TABLE = "boston_crashes"
+_STATIC_DIR = _REPO_ROOT / "static"
+
+# ── 0. Frontend ───────────────────────────────────────────────
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+def serve_frontend():
+    """Serve the single-page frontend app with the Google Maps API key injected."""
+    api_key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+    html = (_STATIC_DIR / "index.html").read_text()
+    return html.replace("{{GOOGLE_MAPS_API_KEY}}", api_key)
 
 # ── 1. Get all crashes (paginated) ───────────────────────────
 @app.get("/crashes")
@@ -198,3 +210,9 @@ def predict_example():
         },
         "_note": "Hardcoded example. Call POST /predict for a live prediction.",
     }
+
+
+# ── Static files (CSS/JS assets for future use) ───────────────
+# Mounted last so explicit routes above always take precedence.
+if _STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")

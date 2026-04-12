@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Boston Route Risk Predictor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    #map { width: 100%; height: 100%; }
+    /* Places Autocomplete dropdown must float above the map */
+    .pac-container { z-index: 9999 !important; }
+    /* Probability bar animation */
+    .prob-bar { transition: width 0.65s cubic-bezier(.4,0,.2,1); }
+    /* Spinner keyframe */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin 0.75s linear infinite; }
+    /* Thin scrollbar for sidebar */
+    #sidebar::-webkit-scrollbar { width: 4px; }
+    #sidebar::-webkit-scrollbar-track { background: transparent; }
+    #sidebar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 9px; }
+  </style>
+</head>
+
+<body class="flex flex-col bg-gray-100" style="height:100vh;">
+
+  <!-- ════════════════════════════════════════════════════════════
+       HEADER
+  ═════════════════════════════════════════════════════════════ -->
+  <header class="flex-none bg-gray-900 text-white px-5 py-3 flex items-center justify-between shadow-lg z-30">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center text-xl shadow-inner">🗺️</div>
+      <div>
+        <h1 class="font-extrabold text-base leading-tight tracking-tight">Boston Route Risk Predictor</h1>
+        <p class="text-gray-400 text-xs mt-0.5">LightGBM v2 · Live weather · Google Maps</p>
+      </div>
+    </div>
+    <div class="hidden sm:flex items-center gap-2 text-xs text-gray-400 bg-gray-800 px-3 py-1.5 rounded-full">
+      <span class="w-2 h-2 rounded-full bg-green-400 inline-block"></span>
+      Live API
+    </div>
+  </header>
+
+  <!-- ════════════════════════════════════════════════════════════
+       MAIN  (map left ·  sidebar right)
+  ═════════════════════════════════════════════════════════════ -->
+  <div class="flex-1 flex overflow-hidden">
+
+    <!-- Google Map -->
+    <div id="map" class="flex-1"></div>
+
+    <!-- ── Sidebar ─────────────────────────────────────────────── -->
+    <div id="sidebar"
+         class="w-[390px] flex-none flex flex-col bg-white border-l border-gray-100 shadow-2xl overflow-y-auto z-20">
+
+      <!-- ── Input section ─────────────────────────────────────── -->
+      <div class="flex-none p-5 bg-gray-50 border-b border-gray-100">
+        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-4">Plan Your Route</p>
+
+        <!-- Origin -->
+        <div class="mb-3">
+          <label class="block text-xs font-semibold text-gray-500 mb-1.5">From</label>
+          <div class="relative">
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-green-500
+                         ring-[3px] ring-green-200 pointer-events-none"></span>
+            <input id="origin-input" type="text" autocomplete="off"
+              placeholder="e.g. Fenway Park, Boston MA"
+              class="w-full pl-9 pr-3 py-2.5 bg-white border border-gray-200 rounded-lg text-sm
+                     text-gray-800 placeholder-gray-300 shadow-sm
+                     focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition">
+          </div>
+        </div>
+
+        <!-- Destination -->
+        <div class="mb-4">
+          <label class="block text-xs font-semibold text-gray-500 mb-1.5">To</label>
+          <div class="relative">
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-red-500
+                         ring-[3px] ring-red-200 pointer-events-none"></span>
+            <input id="destination-input" type="text" autocomplete="off"
+              placeholder="e.g. Boston Logan Airport"
+              class="w-full pl-9 pr-3 py-2.5 bg-white border border-gray-200 rounded-lg text-sm
+                     text-gray-800 placeholder-gray-300 shadow-sm
+                     focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition">
+          </div>
+        </div>
+
+        <!-- Predict button -->
+        <button id="predict-btn" onclick="predictRisk()"
+          class="w-full bg-blue-600 hover:bg-blue-700 active:scale-[.98] disabled:opacity-60
+                 text-white font-bold py-2.5 rounded-lg shadow
+                 flex items-center justify-center gap-2 text-sm transition-all select-none">
+          <span id="btn-spinner" class="hidden w-4 h-4 border-2 border-white border-t-transparent rounded-full spin"></span>
+          <span id="btn-icon">🔍</span>
+          <span id="btn-label">Predict Route Risk</span>
+        </button>
+
+        <!-- Try example link -->
+        <button onclick="tryExample()"
+          class="w-full mt-2 text-xs text-blue-500 hover:text-blue-700 py-1 transition-colors">
+          Try example: Fenway Park → Logan Airport ↗
+        </button>
+      </div>
+
+      <!-- ── Dynamic section (one state shown at a time) ────────── -->
+
+      <!-- Placeholder -->
+      <div id="state-placeholder" class="flex flex-col items-center justify-center py-16 px-8 text-center">
+        <div class="w-20 h-20 rounded-3xl bg-blue-50 flex items-center justify-center text-4xl mb-5 shadow-inner">🚗</div>
+        <p class="text-sm font-bold text-gray-700 mb-2">Ready to predict</p>
+        <p class="text-xs text-gray-400 leading-relaxed">
+          Enter an origin and destination above, then click <strong>Predict Route Risk</strong>.
+          We combine live weather, Google Maps routing, and a trained ML model to assess accident risk.
+        </p>
+        <div class="mt-6 grid grid-cols-3 gap-2 w-full text-center">
+          <div class="bg-green-50 rounded-xl p-3">
+            <p class="text-lg">☀️</p>
+            <p class="text-[10px] text-green-700 font-semibold mt-1">Low</p>
+          </div>
+          <div class="bg-yellow-50 rounded-xl p-3">
+            <p class="text-lg">⚠️</p>
+            <p class="text-[10px] text-yellow-700 font-semibold mt-1">Medium</p>
+          </div>
+          <div class="bg-red-50 rounded-xl p-3">
+            <p class="text-lg">🚨</p>
+            <p class="text-[10px] text-red-700 font-semibold mt-1">High</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Loading -->
+      <div id="state-loading" style="display:none;"
+           class="flex flex-col items-center justify-center py-16 px-8 text-center">
+        <div class="w-14 h-14 rounded-full border-4 border-blue-200 border-t-blue-600 spin mb-6"></div>
+        <p class="text-sm font-bold text-gray-700 mb-1">Analyzing route risk…</p>
+        <p class="text-xs text-gray-400">Calling Google Maps · OpenWeather · LightGBM</p>
+        <p class="text-xs text-gray-300 mt-3">First request may take ~30 s on cold start</p>
+      </div>
+
+      <!-- Error -->
+      <div id="state-error" style="display:none;" class="p-5">
+        <div class="bg-red-50 border border-red-100 rounded-2xl p-4 flex gap-3">
+          <span class="text-red-400 text-2xl flex-none leading-none">⚠</span>
+          <div>
+            <p class="text-sm font-bold text-red-700 mb-1">Prediction failed</p>
+            <p id="error-msg" class="text-xs text-red-500 leading-relaxed break-words"></p>
+          </div>
+        </div>
+        <button onclick="showState('placeholder')"
+          class="mt-3 w-full text-xs text-gray-400 hover:text-gray-600 transition-colors py-1">
+          ← Back
+        </button>
+      </div>
+
+      <!-- Results -->
+      <div id="state-results" style="display:none;" class="p-5 space-y-5">
+
+        <!-- ── Risk card ────────────────────────────────────────── -->
+        <div id="risk-card" class="rounded-2xl p-5 text-white shadow-lg">
+          <p class="text-[10px] font-bold opacity-70 uppercase tracking-[.15em] mb-3">Predicted Risk</p>
+          <div class="flex items-end justify-between">
+            <div>
+              <p id="risk-icon-big" class="text-4xl leading-none mb-1"></p>
+              <p id="risk-label-big" class="text-2xl font-black leading-tight"></p>
+            </div>
+            <div class="text-right">
+              <p class="text-xs opacity-70 mb-1">Confidence</p>
+              <p id="risk-confidence" class="text-4xl font-black tabular-nums"></p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Probability bars ─────────────────────────────────── -->
+        <div class="bg-gray-50 rounded-2xl p-4">
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-3">Class Probabilities</p>
+          <div id="prob-bars" class="space-y-3"></div>
+        </div>
+
+        <!-- ── Route details ────────────────────────────────────── -->
+        <div>
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-3">Route Details</p>
+          <div id="route-grid" class="grid grid-cols-2 gap-2.5"></div>
+        </div>
+
+        <!-- ── Weather ──────────────────────────────────────────── -->
+        <div class="bg-gray-50 rounded-2xl p-4">
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-3">Weather at Route Midpoint</p>
+          <div id="weather-grid" class="space-y-2"></div>
+        </div>
+
+        <!-- ── Model context ────────────────────────────────────── -->
+        <div class="bg-gray-50 rounded-2xl p-4">
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-3">Model Context</p>
+          <div id="ctx-grid" class="space-y-2"></div>
+        </div>
+
+        <!-- New prediction button -->
+        <button onclick="resetForNewPrediction()"
+          class="w-full text-xs text-blue-500 hover:text-blue-700 py-2 transition-colors font-medium">
+          ← New prediction
+        </button>
+
+      </div><!-- /state-results -->
+    </div><!-- /sidebar -->
+  </div><!-- /main -->
+
+  <!-- ════════════════════════════════════════════════════════════
+       FOOTER
+  ═════════════════════════════════════════════════════════════ -->
+  <footer class="flex-none bg-gray-900 text-gray-500 text-xs px-5 py-2
+                 flex items-center justify-between gap-4">
+    <span class="truncate">Mohammed Mubashir Uddin Faraz · Data Detectives</span>
+    <a href="https://github.com/machackgo/boston-smart-accident-risk-rerouting"
+       target="_blank" rel="noopener noreferrer"
+       class="flex-none flex items-center gap-1.5 hover:text-gray-200 transition-colors">
+      <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57
+                 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695
+                 -.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99
+                 .105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225
+                 -.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405
+                 c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225
+                 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3
+                 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+      </svg>
+      machackgo/boston-smart-accident-risk-rerouting
+    </a>
+  </footer>
+
+  <!-- ════════════════════════════════════════════════════════════
+       JAVASCRIPT
+  ═════════════════════════════════════════════════════════════ -->
+  <script>
+  'use strict';
+
+  // ── Risk configuration ─────────────────────────────────────────
+  const RISK = {
+    Low:    { icon: '✅', label: 'Low Risk',    color: '#22c55e',
+              gradient: 'linear-gradient(135deg,#16a34a,#22c55e)',
+              barColor: '#22c55e' },
+    Medium: { icon: '⚠️',  label: 'Medium Risk', color: '#eab308',
+              gradient: 'linear-gradient(135deg,#ca8a04,#eab308)',
+              barColor: '#eab308' },
+    High:   { icon: '🚨', label: 'High Risk',   color: '#ef4444',
+              gradient: 'linear-gradient(135deg,#dc2626,#ef4444)',
+              barColor: '#ef4444' },
+  };
+
+  const WEATHER_ICONS = {
+    Clear:'☀️', Clouds:'☁️', Rain:'🌧️', Drizzle:'🌦️',
+    Snow:'❄️', Thunderstorm:'⛈️', Fog:'🌫️', Mist:'🌫️',
+    Haze:'🌫️', Smoke:'🌫️', Dust:'🌫️', Sand:'🌫️',
+  };
+
+  // ── Map state ──────────────────────────────────────────────────
+  let map, routePolyline = null, altPolylines = [], originMarker = null, destMarker = null;
+
+  // ── initMap (Google Maps JS API callback) ──────────────────────
+  function initMap() {
+    map = new google.maps.Map(document.getElementById('map'), {
+      center: { lat: 42.3601, lng: -71.0589 },
+      zoom: 12,
+      mapTypeControl: false,
+      streetViewControl: false,
+      fullscreenControl: false,
+      gestureHandling: 'greedy',
+      styles: [
+        { featureType: 'poi',     elementType: 'labels', stylers: [{ visibility: 'off' }] },
+        { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'off' }] },
+      ],
+    });
+
+    // Places Autocomplete — biased to Boston metro area
+    const bostonBounds = new google.maps.LatLngBounds(
+      new google.maps.LatLng(42.15, -71.35),
+      new google.maps.LatLng(42.55, -70.80)
+    );
+    const acOpts = {
+      bounds: bostonBounds,
+      componentRestrictions: { country: 'us' },
+      fields: ['formatted_address', 'geometry'],
+      strictBounds: false,
+    };
+    new google.maps.places.Autocomplete(document.getElementById('origin-input'),      acOpts);
+    new google.maps.places.Autocomplete(document.getElementById('destination-input'), acOpts);
+
+    // Enter key submits
+    ['origin-input', 'destination-input'].forEach(id =>
+      document.getElementById(id).addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); predictRisk(); }
+      })
+    );
+  }
+
+  // ── State management ───────────────────────────────────────────
+  const STATES = ['placeholder', 'loading', 'error', 'results'];
+
+  function showState(name) {
+    STATES.forEach(s => {
+      const el = document.getElementById('state-' + s);
+      if (s === name) {
+        el.style.display = (s === 'placeholder' || s === 'loading') ? 'flex' : 'block';
+        el.style.flexDirection = 'column';
+        el.style.alignItems    = 'center';
+      } else {
+        el.style.display = 'none';
+      }
+    });
+  }
+
+  function resetForNewPrediction() {
+    showState('placeholder');
+    clearMap();
+  }
+
+  // ── Map helpers ────────────────────────────────────────────────
+  function clearMap() {
+    if (routePolyline) { routePolyline.setMap(null); routePolyline = null; }
+    altPolylines.forEach(p => p.setMap(null));
+    altPolylines = [];
+    if (originMarker) { originMarker.setMap(null); originMarker = null; }
+    if (destMarker)   { destMarker.setMap(null);   destMarker   = null; }
+  }
+
+  function circleIcon(fillColor) {
+    return {
+      path: google.maps.SymbolPath.CIRCLE,
+      scale: 9,
+      fillColor,
+      fillOpacity: 1,
+      strokeColor: '#ffffff',
+      strokeWeight: 2.5,
+    };
+  }
+
+  function drawRoute(data) {
+    clearMap();
+    if (!map || !data.route) return;
+
+    const cfg = RISK[data.risk_class] || RISK.Medium;
+
+    // ── Default route ────────────────────────────────────────────
+    let path = [];
+    if (data.route.polyline) {
+      try { path = google.maps.geometry.encoding.decodePath(data.route.polyline); }
+      catch (e) { console.warn('decodePath failed:', e); }
+    }
+
+    if (path.length > 0) {
+      routePolyline = new google.maps.Polyline({
+        path,
+        strokeColor:   cfg.color,
+        strokeOpacity: 0.95,
+        strokeWeight:  7,
+        zIndex:        10,
+        map,
+      });
+
+      // Fit map bounds around route
+      const bounds = new google.maps.LatLngBounds();
+      path.forEach(pt => bounds.extend(pt));
+      map.fitBounds(bounds, { top: 80, right: 40, bottom: 80, left: 40 });
+
+      // Origin (green) + destination (red) markers
+      originMarker = new google.maps.Marker({ position: path[0],             map, icon: circleIcon('#22c55e'), zIndex: 20, title: 'Origin' });
+      destMarker   = new google.maps.Marker({ position: path[path.length-1], map, icon: circleIcon('#ef4444'), zIndex: 20, title: 'Destination' });
+    }
+
+    // ── Alternative routes (dashed gray) ────────────────────────
+    (data.route.alternative_polylines || []).forEach(enc => {
+      if (!enc) return;
+      let altPath = [];
+      try { altPath = google.maps.geometry.encoding.decodePath(enc); } catch (e) {}
+      if (altPath.length === 0) return;
+      altPolylines.push(new google.maps.Polyline({
+        path: altPath,
+        strokeOpacity: 0,
+        strokeWeight:  4,
+        zIndex:        5,
+        map,
+        icons: [{ icon: { path:'M 0,-1 0,1', strokeOpacity: 0.45, strokeColor:'#94a3b8', scale: 3 },
+                  offset: '0', repeat: '14px' }],
+      }));
+    });
+  }
+
+  // ── Results panel ──────────────────────────────────────────────
+  function populateResults(data) {
+    const cfg = RISK[data.risk_class] || RISK.Medium;
+
+    // Risk card
+    document.getElementById('risk-card').style.background  = cfg.gradient;
+    document.getElementById('risk-icon-big').textContent   = cfg.icon;
+    document.getElementById('risk-label-big').textContent  = cfg.label;
+    document.getElementById('risk-confidence').textContent = (data.confidence * 100).toFixed(1) + '%';
+
+    // Probability bars
+    const probsEl = document.getElementById('prob-bars');
+    probsEl.innerHTML = '';
+    [
+      { cls: 'Low',    color: '#22c55e' },
+      { cls: 'Medium', color: '#eab308' },
+      { cls: 'High',   color: '#ef4444' },
+    ].forEach(({ cls, color }) => {
+      const pct = ((data.class_probabilities[cls] || 0) * 100).toFixed(1);
+      probsEl.insertAdjacentHTML('beforeend', `
+        <div>
+          <div class="flex justify-between items-baseline mb-1">
+            <span class="text-xs font-semibold text-gray-600">${cls}</span>
+            <span class="text-xs font-bold text-gray-800 tabular-nums">${pct}%</span>
+          </div>
+          <div class="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+            <div class="h-2 rounded-full prob-bar" style="width:0%;background:${color}"
+                 data-target="${pct}%"></div>
+          </div>
+        </div>`);
+    });
+    // Trigger bar animations after next paint
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      probsEl.querySelectorAll('.prob-bar').forEach(b => { b.style.width = b.dataset.target; });
+    }));
+
+    // Route grid
+    const r = data.route;
+    document.getElementById('route-grid').innerHTML = `
+      ${card('🕐', 'Duration',     r.duration_minutes + ' min')}
+      ${card('📍', 'Distance',     r.distance_miles   + ' mi')}
+      ${card('🔀', 'Alternatives', r.num_alternatives)}
+      ${card('⏱️', 'Best alt saves',
+          r.best_alternative_savings_minutes > 0
+            ? '<span class="text-green-600">' + r.best_alternative_savings_minutes + ' min</span>'
+            : '<span class="text-gray-400">—</span>')}`;
+
+    // Weather
+    const w = data.weather;
+    const wIcon = WEATHER_ICONS[w.condition] || '🌡️';
+    document.getElementById('weather-grid').innerHTML = `
+      ${row('Condition',    wIcon + ' ' + w.condition)}
+      ${row('Temperature',  w.temperature_f.toFixed(1) + '°F')}
+      ${row('Precipitation',
+          w.is_precipitation
+            ? '<span class="text-blue-600 font-semibold">Yes 🌧️</span>'
+            : '<span class="text-gray-500">No</span>')}
+      ${row('Visibility',
+          w.is_low_visibility
+            ? '<span class="text-orange-500 font-semibold">Low (&lt;5 km) 🌫️</span>'
+            : '<span class="text-gray-500">Good</span>')}`;
+
+    // Context
+    const ctx = data.context;
+    document.getElementById('ctx-grid').innerHTML = `
+      ${row('Boston time', String(ctx.hour_of_day).padStart(2,'0') + ':xx EDT')}
+      ${row('Midpoint',    ctx.midpoint_lat.toFixed(4) + ', ' + ctx.midpoint_lng.toFixed(4))}
+      <div class="pt-1">
+        <span class="text-xs text-gray-400">Weather mapping</span>
+        <p class="text-xs font-semibold text-gray-700 mt-0.5 break-all">${ctx.weather_mapping_used}</p>
+      </div>`;
+  }
+
+  // ── Small template helpers ─────────────────────────────────────
+  function card(icon, label, value) {
+    return `<div class="bg-white border border-gray-100 rounded-xl p-3 shadow-sm">
+      <p class="text-[10px] text-gray-400 mb-1">${icon} ${label}</p>
+      <p class="text-sm font-bold text-gray-800">${value}</p>
+    </div>`;
+  }
+  function row(label, value) {
+    return `<div class="flex justify-between items-center text-xs">
+      <span class="text-gray-400 flex-none mr-3">${label}</span>
+      <span class="text-gray-700 font-semibold text-right">${value}</span>
+    </div>`;
+  }
+
+  // ── Core predict function ──────────────────────────────────────
+  async function predictRisk() {
+    const origin      = document.getElementById('origin-input').value.trim();
+    const destination = document.getElementById('destination-input').value.trim();
+
+    if (!origin || !destination) {
+      alert('Please enter both a starting point and a destination.');
+      return;
+    }
+
+    // Set button to loading state
+    const btn = document.getElementById('predict-btn');
+    btn.disabled = true;
+    document.getElementById('btn-spinner').classList.remove('hidden');
+    document.getElementById('btn-icon').classList.add('hidden');
+    document.getElementById('btn-label').textContent = 'Analyzing…';
+
+    showState('loading');
+
+    try {
+      const res  = await fetch('/predict', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ origin, destination }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `Server error (HTTP ${res.status})`);
+
+      drawRoute(data);
+      populateResults(data);
+      showState('results');
+
+    } catch (err) {
+      document.getElementById('error-msg').textContent = err.message;
+      showState('error');
+    } finally {
+      btn.disabled = false;
+      document.getElementById('btn-spinner').classList.add('hidden');
+      document.getElementById('btn-icon').classList.remove('hidden');
+      document.getElementById('btn-label').textContent = 'Predict Route Risk';
+    }
+  }
+
+  // ── Try example helper ─────────────────────────────────────────
+  function tryExample() {
+    document.getElementById('origin-input').value      = 'Fenway Park, Boston, MA';
+    document.getElementById('destination-input').value = 'Boston Logan International Airport, MA';
+    predictRisk();
+  }
+  </script>
+
+  <!-- Google Maps JS API — key injected server-side at GET / -->
+  <script
+    src="https://maps.googleapis.com/maps/api/js?key={{GOOGLE_MAPS_API_KEY}}&libraries=places,geometry&callback=initMap"
+    async defer>
+  </script>
+
+</body>
+</html>
