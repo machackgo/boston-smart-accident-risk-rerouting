@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from supabase import create_client
 from typing import Optional
 
-from src.predict.predictor import predict_route_risk
+from src.predict.predictor import predict_route_risk, predict_route_risk_segmented
 
 # ── Credentials ──────────────────────────────────────────────
 SUPABASE_URL = "https://iizfaawqzzrnhfaihimp.supabase.co"
@@ -46,6 +46,12 @@ class PredictRequest(BaseModel):
     origin: str
     destination: str
     departure_time: Optional[str] = None  # ISO 8601, e.g. "2024-10-15T08:00:00Z"
+
+class SegmentedPredictRequest(BaseModel):
+    origin: str
+    destination: str
+    departure_time: Optional[str] = None
+    num_segments: int = 12
 
 TABLE = "boston_crashes"
 _STATIC_DIR = _REPO_ROOT / "static"
@@ -172,7 +178,43 @@ def predict(request: PredictRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── 10. Predict example (GET convenience endpoint) ────────────
+# ── 10. Per-segment route risk prediction ─────────────────────
+@app.post("/predict/segmented")
+def predict_segmented(request: SegmentedPredictRequest):
+    """
+    Predict accident risk at multiple points along a route.
+
+    Samples `num_segments` points evenly from the decoded polyline and runs a
+    single batch LightGBM inference.  Returns per-segment risk classes, a
+    hotspot list (Medium/High segments), and an overall worst-case risk class.
+
+    **Request body:**
+    - `origin` — starting address or place name
+    - `destination` — destination address or place name
+    - `departure_time` — optional ISO 8601 datetime (defaults to now)
+    - `num_segments` — number of sample points (default 12)
+
+    **Returns:**
+    - `risk_class` — worst-case overall risk ("Low", "Medium", or "High")
+    - `overall_confidence` / `overall_probabilities` — averaged across segments
+    - `segments` — list of per-point predictions with lat/lng and polyline_index
+    - `hotspots` — Medium/High segments sorted by distance from start
+    - `route` — includes `decoded_points` list for frontend segment drawing
+    - `weather` / `context` — same shape as /predict
+    """
+    try:
+        result = predict_route_risk_segmented(
+            origin=request.origin,
+            destination=request.destination,
+            departure_time=request.departure_time,
+            num_segments=request.num_segments,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── 11. Predict example (GET convenience endpoint) ────────────
 @app.get("/predict/example")
 def predict_example():
     """

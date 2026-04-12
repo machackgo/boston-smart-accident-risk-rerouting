@@ -128,6 +128,74 @@ def _map_weather(ow_condition: str) -> tuple[str, str]:
     return col, desc
 
 
+def build_segment_features(route: dict, sample_points: list, departure_time=None) -> tuple:
+    """
+    Build an N-row feature DataFrame for a list of sample points along a route.
+
+    Uses ONE weather call for the entire route (weather doesn't change every 500 m)
+    and applies shared time features to all rows.  Only lat/lng differs per row.
+
+    Args:
+        route (dict): Return value of get_route() — must contain default_route.
+        sample_points (list): List of (lat, lng) tuples, one per segment sample.
+        departure_time: ISO 8601 string, datetime object, or None (= now).
+
+    Returns:
+        features_df (pd.DataFrame): N-row DataFrame in exact V2_FEATURES column order.
+        context (dict): Transparency dict — weather used, time features, num points.
+    """
+    dt = _resolve_time(departure_time)
+    print(f"[feature_builder] segment mode | Boston time: {dt.strftime('%Y-%m-%d %H:%M %Z')}, "
+          f"points={len(sample_points)}")
+
+    # ── Weather: one call at route midpoint ───────────────────────────────────
+    default_route = route["default_route"]
+    midpoint      = default_route["midpoint_coords"]
+    if midpoint is None:
+        raise ValueError("Route has no decoded polyline — cannot fetch weather.")
+    mid_lat = midpoint["lat"]
+    mid_lng = midpoint["lng"]
+
+    print(f"[feature_builder] Fetching weather at midpoint ({mid_lat}, {mid_lng}) ...")
+    weather       = get_weather(lat=mid_lat, lng=mid_lng)
+    ow_condition  = weather["condition"]
+    weather_col, weather_mapping_desc = _map_weather(ow_condition)
+    print(f"[feature_builder] Weather mapping: {weather_mapping_desc}")
+
+    # ── Time features: shared across all points ───────────────────────────────
+    time_feats  = _time_features(dt)
+    light_feats = _light_phase_features(time_feats["hour_of_day"])
+
+    # ── Build one row per sample point ────────────────────────────────────────
+    rows = []
+    for lat, lng in sample_points:
+        row = {feat: 0 for feat in V2_FEATURES}
+        row["lat"]         = lat
+        row["lon"]         = lng
+        row["speed_limit"] = _DEFAULT_SPEED_LIMIT
+        row.update(time_feats)
+        row.update(light_feats)
+        if weather_col in row:
+            row[weather_col] = 1
+        else:
+            row[_WEATHER_FALLBACK] = 1
+        rows.append(row)
+
+    features_df = pd.DataFrame(rows)[V2_FEATURES]
+
+    context = {
+        "weather_raw":          weather,
+        "weather_mapping_used": weather_mapping_desc,
+        "weather_col":          weather_col,
+        "departure_time":       dt.isoformat(),
+        "time_features":        time_feats,
+        "local_hour":           time_feats["hour_of_day"],
+        "num_points":           len(sample_points),
+    }
+
+    return features_df, context
+
+
 def build_features(origin: str, destination: str, departure_time=None) -> tuple:
     """
     Orchestrate live API calls and assemble the 80-feature DataFrame row

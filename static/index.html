@@ -32,7 +32,7 @@
       <div class="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center text-xl shadow-inner">🗺️</div>
       <div>
         <h1 class="font-extrabold text-base leading-tight tracking-tight">Boston Route Risk Predictor</h1>
-        <p class="text-gray-400 text-xs mt-0.5">LightGBM v2 · Live weather · Google Maps</p>
+        <p class="text-gray-400 text-xs mt-0.5">LightGBM v2 · Per-segment risk · Live weather · Google Maps</p>
       </div>
     </div>
     <div class="hidden sm:flex items-center gap-2 text-xs text-gray-400 bg-gray-800 px-3 py-1.5 rounded-full">
@@ -110,20 +110,15 @@
         <p class="text-sm font-bold text-gray-700 mb-2">Ready to predict</p>
         <p class="text-xs text-gray-400 leading-relaxed">
           Enter an origin and destination above, then click <strong>Predict Route Risk</strong>.
-          We combine live weather, Google Maps routing, and a trained ML model to assess accident risk.
+          We sample 12 points along your route, run per-segment ML predictions, and color the map green → yellow → red by risk.
         </p>
-        <div class="mt-6 grid grid-cols-3 gap-2 w-full text-center">
-          <div class="bg-green-50 rounded-xl p-3">
-            <p class="text-lg">☀️</p>
-            <p class="text-[10px] text-green-700 font-semibold mt-1">Low</p>
-          </div>
-          <div class="bg-yellow-50 rounded-xl p-3">
-            <p class="text-lg">⚠️</p>
-            <p class="text-[10px] text-yellow-700 font-semibold mt-1">Medium</p>
-          </div>
-          <div class="bg-red-50 rounded-xl p-3">
-            <p class="text-lg">🚨</p>
-            <p class="text-[10px] text-red-700 font-semibold mt-1">High</p>
+        <!-- Legend -->
+        <div class="mt-6 w-full bg-gray-50 rounded-xl p-3">
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-2">Route Color Legend</p>
+          <div class="flex items-center gap-3 justify-center text-xs font-semibold">
+            <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-[#22c55e] inline-block"></span>Low</span>
+            <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-[#eab308] inline-block"></span>Medium</span>
+            <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-[#ef4444] inline-block"></span>High</span>
           </div>
         </div>
       </div>
@@ -134,7 +129,8 @@
         <div class="w-14 h-14 rounded-full border-4 border-blue-200 border-t-blue-600 spin mb-6"></div>
         <p class="text-sm font-bold text-gray-700 mb-1">Analyzing route risk…</p>
         <p class="text-xs text-gray-400">Calling Google Maps · OpenWeather · LightGBM</p>
-        <p class="text-xs text-gray-300 mt-3">First request may take ~30 s on cold start</p>
+        <p class="text-xs text-gray-300 mt-3">Predicting risk at 12 points along your route</p>
+        <p class="text-xs text-gray-300 mt-1">First request may take ~30 s on cold start</p>
       </div>
 
       <!-- Error -->
@@ -157,14 +153,15 @@
 
         <!-- ── Risk card ────────────────────────────────────────── -->
         <div id="risk-card" class="rounded-2xl p-5 text-white shadow-lg">
-          <p class="text-[10px] font-bold opacity-70 uppercase tracking-[.15em] mb-3">Predicted Risk</p>
+          <p class="text-[10px] font-bold opacity-70 uppercase tracking-[.15em] mb-3">Overall Route Risk</p>
           <div class="flex items-end justify-between">
             <div>
               <p id="risk-icon-big" class="text-4xl leading-none mb-1"></p>
               <p id="risk-label-big" class="text-2xl font-black leading-tight"></p>
+              <p id="risk-sublabel" class="text-xs opacity-75 mt-1"></p>
             </div>
             <div class="text-right">
-              <p class="text-xs opacity-70 mb-1">Confidence</p>
+              <p class="text-xs opacity-70 mb-1">Avg Confidence</p>
               <p id="risk-confidence" class="text-4xl font-black tabular-nums"></p>
             </div>
           </div>
@@ -172,8 +169,26 @@
 
         <!-- ── Probability bars ─────────────────────────────────── -->
         <div class="bg-gray-50 rounded-2xl p-4">
-          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-3">Class Probabilities</p>
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-3">Average Class Probabilities</p>
           <div id="prob-bars" class="space-y-3"></div>
+        </div>
+
+        <!-- ── Risk Hotspots ────────────────────────────────────── -->
+        <div class="rounded-2xl border border-gray-100 overflow-hidden">
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] px-4 pt-4 pb-2">
+            ⚠️ Risk Hotspots
+          </p>
+          <div id="hotspot-list" class="px-4 pb-4"></div>
+        </div>
+
+        <!-- ── Route Color Legend ───────────────────────────────── -->
+        <div class="bg-gray-50 rounded-2xl p-4">
+          <p class="text-[10px] font-bold text-gray-400 uppercase tracking-[.15em] mb-3">Route Color Legend</p>
+          <div class="flex items-center gap-4 text-xs font-semibold">
+            <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-[#22c55e] inline-block shadow-sm"></span>Low Risk</span>
+            <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-[#eab308] inline-block shadow-sm"></span>Medium Risk</span>
+            <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-[#ef4444] inline-block shadow-sm"></span>High Risk</span>
+          </div>
         </div>
 
         <!-- ── Route details ────────────────────────────────────── -->
@@ -253,7 +268,13 @@
   };
 
   // ── Map state ──────────────────────────────────────────────────
-  let map, routePolyline = null, altPolylines = [], originMarker = null, destMarker = null;
+  let map;
+  let segmentPolylines = [];   // colored per-segment polylines
+  let altPolylines = [];
+  let originMarker = null;
+  let destMarker = null;
+  let hotspotMarkers = [];     // red markers at High-risk hotspots
+  let openInfoWindow = null;   // track open info window so we can close it
 
   // ── initMap (Google Maps JS API callback) ──────────────────────
   function initMap() {
@@ -315,11 +336,15 @@
 
   // ── Map helpers ────────────────────────────────────────────────
   function clearMap() {
-    if (routePolyline) { routePolyline.setMap(null); routePolyline = null; }
+    segmentPolylines.forEach(p => p.setMap(null));
+    segmentPolylines = [];
     altPolylines.forEach(p => p.setMap(null));
     altPolylines = [];
     if (originMarker) { originMarker.setMap(null); originMarker = null; }
     if (destMarker)   { destMarker.setMap(null);   destMarker   = null; }
+    hotspotMarkers.forEach(m => m.setMap(null));
+    hotspotMarkers = [];
+    if (openInfoWindow) { openInfoWindow.close(); openInfoWindow = null; }
   }
 
   function circleIcon(fillColor) {
@@ -333,40 +358,106 @@
     };
   }
 
-  function drawRoute(data) {
+  /**
+   * Draw the route as per-segment colored polylines.
+   *
+   * decoded_points: array of [lat, lng] from the API response.
+   * segments: array of segment objects with polyline_index and risk_class.
+   *
+   * For each pair of consecutive segments (i, i+1), we slice decoded_points
+   * from segments[i].polyline_index to segments[i+1].polyline_index (inclusive)
+   * and draw that sub-path colored by segments[i].risk_class.
+   */
+  function drawSegmentedRoute(data) {
     clearMap();
     if (!map || !data.route) return;
 
-    const cfg = RISK[data.risk_class] || RISK.Medium;
+    const decoded = data.route.decoded_points;   // [[lat,lng], ...]
+    const segs    = data.segments;
 
-    // ── Default route ────────────────────────────────────────────
-    let path = [];
-    if (data.route.polyline) {
-      try { path = google.maps.geometry.encoding.decodePath(data.route.polyline); }
-      catch (e) { console.warn('decodePath failed:', e); }
+    if (!decoded || decoded.length === 0 || !segs || segs.length < 2) {
+      // Fallback: draw single polyline with overall risk color if no segments
+      if (data.route.polyline) {
+        let path = [];
+        try { path = google.maps.geometry.encoding.decodePath(data.route.polyline); } catch(e) {}
+        if (path.length > 0) {
+          const cfg = RISK[data.risk_class] || RISK.Medium;
+          segmentPolylines.push(new google.maps.Polyline({
+            path, strokeColor: cfg.color, strokeOpacity: 0.95, strokeWeight: 5, zIndex: 10, map,
+          }));
+        }
+      }
+    } else {
+      // Draw n-1 colored sub-paths (segment i covers pts from segs[i] to segs[i+1])
+      for (let i = 0; i < segs.length - 1; i++) {
+        const startIdx = segs[i].polyline_index;
+        const endIdx   = segs[i + 1].polyline_index;
+        const color    = (RISK[segs[i].risk_class] || RISK.Medium).color;
+
+        const subPath = [];
+        for (let j = startIdx; j <= endIdx; j++) {
+          subPath.push({ lat: decoded[j][0], lng: decoded[j][1] });
+        }
+        if (subPath.length < 2) continue;
+
+        segmentPolylines.push(new google.maps.Polyline({
+          path:          subPath,
+          strokeColor:   color,
+          strokeOpacity: 0.95,
+          strokeWeight:  5,
+          zIndex:        10,
+          map,
+        }));
+      }
     }
 
-    if (path.length > 0) {
-      routePolyline = new google.maps.Polyline({
-        path,
-        strokeColor:   cfg.color,
-        strokeOpacity: 0.95,
-        strokeWeight:  7,
-        zIndex:        10,
+    // Fit map bounds
+    const bounds = new google.maps.LatLngBounds();
+    decoded.forEach(pt => bounds.extend({ lat: pt[0], lng: pt[1] }));
+    map.fitBounds(bounds, { top: 80, right: 40, bottom: 80, left: 40 });
+
+    // Origin (green) + destination (red) markers
+    const first = decoded[0];
+    const last  = decoded[decoded.length - 1];
+    originMarker = new google.maps.Marker({ position: { lat: first[0], lng: first[1] }, map, icon: circleIcon('#22c55e'), zIndex: 20, title: 'Origin' });
+    destMarker   = new google.maps.Marker({ position: { lat: last[0],  lng: last[1]  }, map, icon: circleIcon('#ef4444'), zIndex: 20, title: 'Destination' });
+
+    // High-risk hotspot markers with info windows
+    (data.hotspots || []).filter(h => h.risk_class === 'High').forEach(h => {
+      const marker = new google.maps.Marker({
+        position: { lat: h.lat, lng: h.lng },
         map,
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 10,
+          fillColor: '#ef4444',
+          fillOpacity: 0.9,
+          strokeColor: '#ffffff',
+          strokeWeight: 2,
+        },
+        zIndex: 30,
+        title: `High Risk — ${(h.confidence * 100).toFixed(1)}%`,
       });
 
-      // Fit map bounds around route
-      const bounds = new google.maps.LatLngBounds();
-      path.forEach(pt => bounds.extend(pt));
-      map.fitBounds(bounds, { top: 80, right: 40, bottom: 80, left: 40 });
+      const infoWindow = new google.maps.InfoWindow({
+        content: `
+          <div style="font-family:sans-serif;font-size:13px;padding:4px 2px;min-width:160px;">
+            <b style="color:#ef4444;">🚨 High Risk Segment</b><br>
+            <span style="color:#555;">${h.distance_from_start_miles} mi from start</span><br>
+            <span style="color:#333;">Confidence: <b>${(h.confidence * 100).toFixed(1)}%</b></span>
+          </div>`,
+      });
 
-      // Origin (green) + destination (red) markers
-      originMarker = new google.maps.Marker({ position: path[0],             map, icon: circleIcon('#22c55e'), zIndex: 20, title: 'Origin' });
-      destMarker   = new google.maps.Marker({ position: path[path.length-1], map, icon: circleIcon('#ef4444'), zIndex: 20, title: 'Destination' });
-    }
+      marker.addListener('click', () => {
+        if (openInfoWindow) openInfoWindow.close();
+        infoWindow.open(map, marker);
+        openInfoWindow = infoWindow;
+      });
 
-    // ── Alternative routes (dashed gray) ────────────────────────
+      hotspotMarkers.push(marker);
+    });
+
+    // Alternative routes (dashed gray)
     (data.route.alternative_polylines || []).forEach(enc => {
       if (!enc) return;
       let altPath = [];
@@ -387,14 +478,18 @@
   // ── Results panel ──────────────────────────────────────────────
   function populateResults(data) {
     const cfg = RISK[data.risk_class] || RISK.Medium;
+    const ctx = data.context || {};
 
     // Risk card
     document.getElementById('risk-card').style.background  = cfg.gradient;
     document.getElementById('risk-icon-big').textContent   = cfg.icon;
     document.getElementById('risk-label-big').textContent  = cfg.label;
-    document.getElementById('risk-confidence').textContent = (data.confidence * 100).toFixed(1) + '%';
+    document.getElementById('risk-sublabel').textContent   =
+      `Worst case across ${ctx.num_segments_analyzed || '?'} segments`;
+    document.getElementById('risk-confidence').textContent =
+      (data.overall_confidence * 100).toFixed(1) + '%';
 
-    // Probability bars
+    // Probability bars (averaged across segments)
     const probsEl = document.getElementById('prob-bars');
     probsEl.innerHTML = '';
     [
@@ -402,7 +497,7 @@
       { cls: 'Medium', color: '#eab308' },
       { cls: 'High',   color: '#ef4444' },
     ].forEach(({ cls, color }) => {
-      const pct = ((data.class_probabilities[cls] || 0) * 100).toFixed(1);
+      const pct = ((data.overall_probabilities[cls] || 0) * 100).toFixed(1);
       probsEl.insertAdjacentHTML('beforeend', `
         <div>
           <div class="flex justify-between items-baseline mb-1">
@@ -415,10 +510,36 @@
           </div>
         </div>`);
     });
-    // Trigger bar animations after next paint
     requestAnimationFrame(() => requestAnimationFrame(() => {
       probsEl.querySelectorAll('.prob-bar').forEach(b => { b.style.width = b.dataset.target; });
     }));
+
+    // Hotspot list
+    const hotspotEl = document.getElementById('hotspot-list');
+    const hotspots  = data.hotspots || [];
+    if (hotspots.length === 0) {
+      hotspotEl.innerHTML = `
+        <div class="flex items-center gap-2 text-xs text-green-700 bg-green-50 rounded-xl px-3 py-2.5">
+          <span class="text-base">✅</span>
+          <span class="font-medium">No elevated-risk segments detected along this route.</span>
+        </div>`;
+    } else {
+      hotspotEl.innerHTML = hotspots.map(h => {
+        const hcfg = RISK[h.risk_class] || RISK.Medium;
+        const bgCls = h.risk_class === 'High'
+          ? 'bg-red-50 border-red-100'
+          : 'bg-yellow-50 border-yellow-100';
+        const textCls = h.risk_class === 'High' ? 'text-red-700' : 'text-yellow-700';
+        return `
+          <div class="flex items-center gap-2.5 border rounded-xl px-3 py-2 mb-2 ${bgCls}">
+            <span class="text-base flex-none">${hcfg.icon}</span>
+            <div class="flex-1 min-w-0">
+              <p class="text-xs font-bold ${textCls}">${h.distance_from_start_miles} mi from start — ${h.risk_class} risk</p>
+              <p class="text-[11px] text-gray-500">${(h.confidence * 100).toFixed(1)}% confidence</p>
+            </div>
+          </div>`;
+      }).join('');
+    }
 
     // Route grid
     const r = data.route;
@@ -447,13 +568,13 @@
             : '<span class="text-gray-500">Good</span>')}`;
 
     // Context
-    const ctx = data.context;
     document.getElementById('ctx-grid').innerHTML = `
-      ${row('Boston time', String(ctx.hour_of_day).padStart(2,'0') + ':xx EDT')}
-      ${row('Midpoint',    ctx.midpoint_lat.toFixed(4) + ', ' + ctx.midpoint_lng.toFixed(4))}
+      ${row('Boston time',     String(ctx.local_hour || 0).padStart(2,'0') + ':xx EDT')}
+      ${row('Segments analyzed', ctx.num_segments_analyzed || '?')}
+      ${row('Hotspots found',   ctx.num_hotspots || 0)}
       <div class="pt-1">
         <span class="text-xs text-gray-400">Weather mapping</span>
-        <p class="text-xs font-semibold text-gray-700 mt-0.5 break-all">${ctx.weather_mapping_used}</p>
+        <p class="text-xs font-semibold text-gray-700 mt-0.5 break-all">${ctx.weather_mapping_used || ''}</p>
       </div>`;
   }
 
@@ -491,7 +612,7 @@
     showState('loading');
 
     try {
-      const res  = await fetch('/predict', {
+      const res  = await fetch('/predict/segmented', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ origin, destination }),
@@ -499,7 +620,7 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || `Server error (HTTP ${res.status})`);
 
-      drawRoute(data);
+      drawSegmentedRoute(data);
       populateResults(data);
       showState('results');
 
