@@ -1,20 +1,48 @@
 """
-Step 2: FastAPI for Boston Crash Data
-Run: pip install fastapi uvicorn supabase
-Then: uvicorn api:app --reload
+Boston Smart Accident Risk Rerouting — FastAPI
+Run:  uvicorn api:app --reload
 Docs: http://localhost:8000/docs
 """
 
-from fastapi import FastAPI, Query
+import sys
+from pathlib import Path
+
+# Ensure repo root is on sys.path so src.predict.predictor is importable
+# (needed on Render where the working directory may not be on PYTHONPATH)
+_REPO_ROOT = Path(__file__).resolve().parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from fastapi import FastAPI, Query, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from supabase import create_client
 from typing import Optional
+
+from src.predict.predictor import predict_route_risk
 
 # ── Credentials ──────────────────────────────────────────────
 SUPABASE_URL = "https://iizfaawqzzrnhfaihimp.supabase.co"
 SUPABASE_KEY = "sb_publishable_EnEsuHwXoNl4bQLeM2221A_LBW4nnNO"  # publishable key for reading
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-app = FastAPI(title="Boston Crash Data API", version="1.0")
+app = FastAPI(title="Boston Smart Accident Risk Rerouting API", version="2.0")
+
+# ── CORS ──────────────────────────────────────────────────────
+# allow_origins=["*"] is intentionally permissive for now; tighten before prod
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── Pydantic models ───────────────────────────────────────────
+class PredictRequest(BaseModel):
+    origin: str
+    destination: str
+    departure_time: Optional[str] = None  # ISO 8601, e.g. "2024-10-15T08:00:00Z"
 
 TABLE = "boston_crashes"
 
@@ -95,3 +123,78 @@ def filter_crashes(
     res = q.limit(limit).execute()
     return {"filters_applied": {"year": year, "city": city, "severity": severity, "weather": weather},
             "total_returned": len(res.data), "data": res.data}
+
+
+# ── 9. Route risk prediction ──────────────────────────────────
+@app.post("/predict")
+def predict(request: PredictRequest):
+    """
+    Predict accident risk severity for a driving route.
+
+    Orchestrates live geocoding, routing (Google Maps Routes API), and weather
+    (OpenWeather API) to assemble the v2 model feature row, then runs the
+    LightGBM v2 classifier to return a risk assessment.
+
+    **Request body:**
+    - `origin` — starting address or place name (e.g. "Fenway Park, Boston, MA")
+    - `destination` — destination address or place name
+    - `departure_time` — optional ISO 8601 datetime (e.g. "2024-10-15T08:00:00Z").
+      Defaults to current time if omitted.
+
+    **Returns:**
+    - `risk_class` — "Low", "Medium", or "High"
+    - `confidence` — probability of the predicted class (0–1)
+    - `class_probabilities` — probabilities for all three classes
+    - `route` — duration, distance, number of alternatives
+    - `weather` — current conditions at the route midpoint
+    - `context` — midpoint coordinates, hour of day, weather mapping used
+    """
+    try:
+        result = predict_route_risk(
+            origin=request.origin,
+            destination=request.destination,
+            departure_time=request.departure_time,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── 10. Predict example (GET convenience endpoint) ────────────
+@app.get("/predict/example")
+def predict_example():
+    """
+    Returns a hardcoded example prediction result for Fenway Park → Boston Logan Airport.
+
+    This is a convenience endpoint for teammates and frontend developers to
+    inspect the /predict response schema without needing to send a POST request.
+    The values below are real — produced by a live call on 2026-04-11 at 00:xx UTC.
+    """
+    return {
+        "risk_class": "Low",
+        "confidence": 0.7909,
+        "class_probabilities": {
+            "High": 0.0199,
+            "Low": 0.7909,
+            "Medium": 0.1892,
+        },
+        "route": {
+            "duration_minutes": 11.95,
+            "distance_miles": 5.123,
+            "num_alternatives": 1,
+            "best_alternative_savings_minutes": 0.0,
+        },
+        "weather": {
+            "condition": "Clear",
+            "temperature_f": 52.38,
+            "is_precipitation": False,
+            "is_low_visibility": False,
+        },
+        "context": {
+            "midpoint_lat": 42.36616,
+            "midpoint_lng": -71.06551,
+            "hour_of_day": 0,
+            "weather_mapping_used": "'Clear' → weath_cond_descr_Clear",
+        },
+        "_note": "Hardcoded example. Call POST /predict for a live prediction.",
+    }
