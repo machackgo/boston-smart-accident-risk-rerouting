@@ -43,8 +43,13 @@ _FEATURE_LIST_PATH = _REPO_ROOT / "models" / "feature_list_v2.txt"
 with open(_FEATURE_LIST_PATH) as _f:
     V2_FEATURES = [line.strip() for line in _f if line.strip()]
 
-# Default speed limit for Boston city roads (known limitation: no road-props API)
-_DEFAULT_SPEED_LIMIT = 30.0
+def _smarter_speed_default(distance_miles: float) -> float:
+    """Distance-based speed limit heuristic when live data is unavailable."""
+    if distance_miles < 2.0:
+        return 25.0
+    if distance_miles < 10.0:
+        return 35.0
+    return 55.0
 
 # OpenWeather main condition → v2 feature column
 _WEATHER_MAP = {
@@ -128,17 +133,26 @@ def _map_weather(ow_condition: str) -> tuple[str, str]:
     return col, desc
 
 
-def build_segment_features(route: dict, sample_points: list, departure_time=None) -> tuple:
+def build_segment_features(
+    route: dict,
+    sample_points: list,
+    departure_time=None,
+    speed_limits_per_point: list | None = None,
+) -> tuple:
     """
     Build an N-row feature DataFrame for a list of sample points along a route.
 
     Uses ONE weather call for the entire route (weather doesn't change every 500 m)
-    and applies shared time features to all rows.  Only lat/lng differs per row.
+    and applies shared time features to all rows.  Only lat/lng (and speed_limit)
+    differ per row.
 
     Args:
         route (dict): Return value of get_route() — must contain default_route.
         sample_points (list): List of (lat, lng) tuples, one per segment sample.
         departure_time: ISO 8601 string, datetime object, or None (= now).
+        speed_limits_per_point (list | None): Per-point speed limit estimates
+            (same length as sample_points).  If None, falls back to the
+            distance-based heuristic.
 
     Returns:
         features_df (pd.DataFrame): N-row DataFrame in exact V2_FEATURES column order.
@@ -166,13 +180,23 @@ def build_segment_features(route: dict, sample_points: list, departure_time=None
     time_feats  = _time_features(dt)
     light_feats = _light_phase_features(time_feats["hour_of_day"])
 
+    # Fallback speed (distance-based) used when per-point data is absent
+    route_dist = default_route.get("distance_miles", 5.0)
+    fallback_speed = _smarter_speed_default(route_dist)
+
     # ── Build one row per sample point ────────────────────────────────────────
     rows = []
-    for lat, lng in sample_points:
+    for i, (lat, lng) in enumerate(sample_points):
         row = {feat: 0 for feat in V2_FEATURES}
         row["lat"]         = lat
         row["lon"]         = lng
-        row["speed_limit"] = _DEFAULT_SPEED_LIMIT
+
+        # Per-point speed limit (from Google traffic intervals or distance fallback)
+        if speed_limits_per_point and i < len(speed_limits_per_point) and speed_limits_per_point[i] is not None:
+            row["speed_limit"] = speed_limits_per_point[i]
+        else:
+            row["speed_limit"] = fallback_speed
+
         row.update(time_feats)
         row.update(light_feats)
         if weather_col in row:
@@ -191,6 +215,8 @@ def build_segment_features(route: dict, sample_points: list, departure_time=None
         "time_features":        time_feats,
         "local_hour":           time_feats["hour_of_day"],
         "num_points":           len(sample_points),
+        "speed_source":         "per_segment" if speed_limits_per_point else "distance_heuristic",
+        "fallback_speed_mph":   fallback_speed,
     }
 
     return features_df, context
@@ -258,8 +284,8 @@ def build_features(origin: str, destination: str, departure_time=None) -> tuple:
     row["lat"] = mid_lat
     row["lon"] = mid_lng
 
-    # Road property
-    row["speed_limit"] = _DEFAULT_SPEED_LIMIT
+    # Road property — use distance-based heuristic (no per-segment data in non-segmented path)
+    row["speed_limit"] = _smarter_speed_default(default_route["distance_miles"])
 
     # Time
     row.update(time_feats)
@@ -292,7 +318,7 @@ def build_features(origin: str, destination: str, departure_time=None) -> tuple:
         "weather_mapping_used":   weather_mapping_desc,
         "weather_feature_set":    weather_col,
         "light_phase":      next(k for k, v in light_feats.items() if v == 1),
-        "speed_limit_used": _DEFAULT_SPEED_LIMIT,
+        "speed_limit_used": _smarter_speed_default(default_route["distance_miles"]),
         "route_raw":        route,
         "weather_raw":      weather,
     }

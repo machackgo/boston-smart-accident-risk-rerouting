@@ -37,8 +37,28 @@ FIELD_MASK = (
     "routes.distanceMeters,"
     "routes.polyline.encodedPolyline,"
     "routes.description,"
-    "routes.legs.steps.navigationInstruction"
+    "routes.legs.steps.navigationInstruction,"
+    "routes.legs.travelAdvisory.speedReadingIntervals"
 )
+
+
+def _distance_based_speed(distance_miles: float) -> float:
+    """Estimate a default speed limit based on route total distance."""
+    if distance_miles < 2.0:
+        return 25.0
+    if distance_miles < 10.0:
+        return 35.0
+    return 55.0
+
+
+def _speed_category_to_mph(category: str, base_speed: float) -> float:
+    """Map Google SpeedCategory enum to an estimated speed-limit value."""
+    mapping = {
+        "NORMAL":      base_speed,
+        "SLOW":        max(15.0, base_speed - 10.0),
+        "TRAFFIC_JAM": max(10.0, base_speed - 20.0),
+    }
+    return mapping.get(category, base_speed)
 
 
 def _decode_polyline(encoded: str) -> list[tuple[float, float]]:
@@ -67,7 +87,13 @@ def _build_waypoint(location):
 
 
 def _parse_route(route):
-    """Extract the standard fields from a single route object."""
+    """Extract the standard fields from a single route object.
+
+    Also builds a per-polyline-point ``speed_limits`` list by reading
+    ``legs[*].travelAdvisory.speedReadingIntervals`` when Google returns them
+    (requires ``extraComputations: TRAFFIC_ON_POLYLINE``).  Falls back to a
+    distance-based default (25 / 35 / 55 mph) when the API returns nothing.
+    """
     duration_seconds = int(route.get("duration", "0s").rstrip("s"))
     distance_meters = route.get("distanceMeters", 0)
     encoded = route.get("polyline", {}).get("encodedPolyline", "")
@@ -83,18 +109,38 @@ def _parse_route(route):
     else:
         start_coords = midpoint_coords = end_coords = None
 
+    distance_miles = round(distance_meters / 1609.344, 3)
+    base_speed = _distance_based_speed(distance_miles)
+
+    # ── Per-point speed limits ─────────────────────────────────────────────
+    speed_limits = [base_speed] * num_points
+
+    for leg in route.get("legs", []):
+        advisory = leg.get("travelAdvisory", {})
+        intervals = advisory.get("speedReadingIntervals", [])
+        for interval in intervals:
+            start_idx = interval.get("startPolylinePointIndex", 0)
+            end_idx   = interval.get("endPolylinePointIndex", 0)
+            category  = interval.get("speed", "NORMAL")
+            speed_val = _speed_category_to_mph(category, base_speed)
+            for i in range(start_idx, end_idx + 1):
+                if 0 <= i < num_points:
+                    speed_limits[i] = speed_val
+
     return {
         "duration_seconds": duration_seconds,
         "duration_minutes": round(duration_seconds / 60, 2),
         "distance_meters": distance_meters,
         "distance_km": round(distance_meters / 1000, 3),
-        "distance_miles": round(distance_meters / 1609.344, 3),
+        "distance_miles": distance_miles,
         "polyline": encoded,
         "start_coords": start_coords,
         "midpoint_coords": midpoint_coords,
         "end_coords": end_coords,
         "decoded_points": points,
         "num_points": num_points,
+        "speed_limits": speed_limits,      # parallel list to decoded_points
+        "base_speed_mph": base_speed,       # which distance-tier was used
     }
 
 
@@ -149,6 +195,8 @@ def get_route(origin, destination, departure_time=None):
         "computeAlternativeRoutes": True,
         "languageCode": "en-US",
         "units": "IMPERIAL",
+        # Request per-segment traffic speed data so we can estimate speed limits
+        "extraComputations": ["TRAFFIC_ON_POLYLINE"],
     }
 
     if departure_time:

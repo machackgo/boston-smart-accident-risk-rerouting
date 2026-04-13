@@ -30,12 +30,17 @@ sys.path.insert(0, str(_REPO_ROOT / "src"))
 from predict.feature_builder import build_features, build_segment_features
 from live.routes import get_route
 from live.geocoding import reverse_geocode
+import re as _re
 
 # ── Load model once at module level ───────────────────────────────────────────
-_MODEL_PATH = _REPO_ROOT / "models" / "best_model_v2.pkl"
+# Use v3 if available (SMOTE + per-segment speed limits), otherwise fall back to v2
+_MODEL_PATH_V3 = _REPO_ROOT / "models" / "best_model_v3.pkl"
+_MODEL_PATH_V2 = _REPO_ROOT / "models" / "best_model_v2.pkl"
+_MODEL_PATH    = _MODEL_PATH_V3 if _MODEL_PATH_V3.exists() else _MODEL_PATH_V2
 _model_bundle = joblib.load(_MODEL_PATH)
 _MODEL   = _model_bundle["model"]
 _CLASSES = _model_bundle["classes"]   # ['High', 'Low', 'Medium']
+print(f"[predictor] Loaded model from {_MODEL_PATH.name}")
 
 # Severity ranking for worst-case aggregation
 _RISK_ORDER = {"Low": 0, "Medium": 1, "High": 2}
@@ -130,23 +135,31 @@ def predict_route_risk(origin: str, destination: str, departure_time=None) -> di
     }
 
 
-def _sample_leg(leg: dict, num_segments: int) -> tuple[list, list]:
+def _sample_leg(leg: dict, num_segments: int) -> tuple[list, list, list]:
     """
-    Return (indices, sample_points) for evenly-spaced samples along a decoded polyline.
+    Return (indices, sample_points, speed_limits) for evenly-spaced samples.
 
-    Always includes the first and last point.  Returns ([], []) if the leg has
-    fewer than 2 decoded points.
+    Always includes the first and last point.  Returns ([], [], []) if the leg
+    has fewer than 2 decoded points.
+
+    speed_limits is a parallel list to sample_points — each entry is the
+    estimated speed limit (mph) at that polyline index, drawn from
+    ``leg["speed_limits"]`` (populated by routes.py from Google traffic
+    advisory data or distance-based fallback).
     """
-    pts   = leg["decoded_points"]
-    total = len(pts)
+    pts          = leg["decoded_points"]
+    speed_data   = leg.get("speed_limits", [])
+    total        = len(pts)
     if total < 2:
-        return [], []
+        return [], [], []
     n    = min(num_segments, total)
     step = max(1, total // n)
     idx  = list(range(0, total, step))[:n]
     if idx[-1] != total - 1:
         idx[-1] = total - 1
-    return idx, [(pts[i][0], pts[i][1]) for i in idx]
+    sample_pts = [(pts[i][0], pts[i][1]) for i in idx]
+    speeds     = [speed_data[i] if speed_data and i < len(speed_data) else None for i in idx]
+    return idx, sample_pts, speeds
 
 
 def _build_recommendation_reason(route_results: list) -> str:
@@ -236,10 +249,11 @@ def predict_route_risk_segmented(
     # ── 2. Sample points from each leg ───────────────────────────────────────
     leg_meta        = []
     all_sample_pts  = []
+    all_sample_spds = []
     row_offset      = 0
 
     for leg_idx, leg in enumerate(all_legs):
-        indices, sample_pts = _sample_leg(leg, num_segments)
+        indices, sample_pts, speeds = _sample_leg(leg, num_segments)
         if not indices:
             print(f"[predictor] Skipping route {leg_idx}: too few polyline points.")
             continue
@@ -253,6 +267,7 @@ def predict_route_risk_segmented(
             "num_rows":   len(indices),
         })
         all_sample_pts.extend(sample_pts)
+        all_sample_spds.extend(speeds)
         row_offset += len(indices)
 
     if not leg_meta:
@@ -263,7 +278,8 @@ def predict_route_risk_segmented(
 
     # ── 3. Build ALL feature rows — ONE weather call ──────────────────────────
     all_features_df, feat_ctx = build_segment_features(
-        route_data, all_sample_pts, departure_time
+        route_data, all_sample_pts, departure_time,
+        speed_limits_per_point=all_sample_spds,
     )
 
     # ── 4. Single batch inference ─────────────────────────────────────────────
@@ -395,6 +411,8 @@ def predict_route_risk_segmented(
             "num_routes_analyzed":   len(route_results),
             "num_segments_per_route": num_segments,
             "weather_mapping_used":  feat_ctx["weather_mapping_used"],
+            "speed_source":          feat_ctx.get("speed_source", "unknown"),
+            "fallback_speed_mph":    feat_ctx.get("fallback_speed_mph"),
         },
         "recommendation_reason": reason,
     }

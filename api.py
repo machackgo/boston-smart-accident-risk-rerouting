@@ -16,13 +16,47 @@ if str(_REPO_ROOT) not in sys.path:
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from supabase import create_client
 from typing import Optional
 
 from src.predict.predictor import predict_route_risk, predict_route_risk_segmented
+from src.live.routes import get_route
+
+# Minimum route thresholds — below these the model's training distribution is not met
+_MIN_DISTANCE_MILES = 0.3
+_MIN_DURATION_MIN   = 2.0
+
+
+def _check_route_size(origin: str, destination: str):
+    """
+    Call get_route() and return a 400 JSONResponse if the route is too short.
+    Returns None when the route is acceptable, or the parsed route dict.
+    Raises HTTPException(500) on API failures.
+    """
+    try:
+        route_data = get_route(origin, destination)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Route lookup failed: {e}")
+    default = route_data["default_route"]
+    dist    = default["distance_miles"]
+    dur     = default["duration_minutes"]
+    if dist < _MIN_DISTANCE_MILES or dur < _MIN_DURATION_MIN:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Route too short for meaningful prediction",
+                "message": (
+                    "Routes under 0.3 miles or 2 minutes are below the model's "
+                    "training distribution. Please choose more distant points."
+                ),
+                "distance_miles": dist,
+                "duration_minutes": dur,
+            },
+        )
+    return None
 
 # ── Credentials ──────────────────────────────────────────────
 SUPABASE_URL = "https://iizfaawqzzrnhfaihimp.supabase.co"
@@ -167,6 +201,11 @@ def predict(request: PredictRequest):
     - `weather` — current conditions at the route midpoint
     - `context` — midpoint coordinates, hour of day, weather mapping used
     """
+    # Tiny-route guard — reject routes below training distribution
+    guard = _check_route_size(request.origin, request.destination)
+    if guard is not None:
+        return guard
+
     try:
         result = predict_route_risk(
             origin=request.origin,
@@ -202,6 +241,11 @@ def predict_segmented(request: SegmentedPredictRequest):
     - `route` — includes `decoded_points` list for frontend segment drawing
     - `weather` / `context` — same shape as /predict
     """
+    # Tiny-route guard — reject routes below training distribution
+    guard = _check_route_size(request.origin, request.destination)
+    if guard is not None:
+        return guard
+
     try:
         result = predict_route_risk_segmented(
             origin=request.origin,
