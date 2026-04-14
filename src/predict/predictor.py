@@ -20,7 +20,9 @@ Usage:
 """
 
 import sys
+import json
 import joblib
+import numpy as np
 import pandas as pd
 from pathlib import Path
 
@@ -33,14 +35,49 @@ from live.geocoding import reverse_geocode
 import re as _re
 
 # ── Load model once at module level ───────────────────────────────────────────
-# Use v3 if available (SMOTE + per-segment speed limits), otherwise fall back to v2
+# Cascade: v4 (spatial) → v3 (SMOTE) → v2 (baseline)
+_MODEL_PATH_V4 = _REPO_ROOT / "models" / "best_model_v4.pkl"
 _MODEL_PATH_V3 = _REPO_ROOT / "models" / "best_model_v3.pkl"
 _MODEL_PATH_V2 = _REPO_ROOT / "models" / "best_model_v2.pkl"
-_MODEL_PATH    = _MODEL_PATH_V3 if _MODEL_PATH_V3.exists() else _MODEL_PATH_V2
+_MODEL_PATH = (
+    _MODEL_PATH_V4 if _MODEL_PATH_V4.exists() else
+    _MODEL_PATH_V3 if _MODEL_PATH_V3.exists() else
+    _MODEL_PATH_V2
+)
 _model_bundle = joblib.load(_MODEL_PATH)
 _MODEL   = _model_bundle["model"]
 _CLASSES = _model_bundle["classes"]   # ['High', 'Low', 'Medium']
 print(f"[predictor] Loaded model from {_MODEL_PATH.name}")
+
+# ── Per-class thresholds (v4 only; default 0.5 for earlier models) ────────────
+_THRESHOLDS_PATH = _REPO_ROOT / "models" / "thresholds_v4.json"
+if _MODEL_PATH == _MODEL_PATH_V4 and _THRESHOLDS_PATH.exists():
+    with open(_THRESHOLDS_PATH) as _f:
+        _THRESHOLDS = json.load(_f)
+    print(f"[predictor] Per-class thresholds loaded: {_THRESHOLDS}")
+else:
+    _THRESHOLDS = {c: 0.5 for c in _CLASSES}
+
+_CLS_IDX = {c: i for i, c in enumerate(_CLASSES)}
+
+
+def _classify_with_thresholds(probas: np.ndarray) -> list[str]:
+    """
+    One-vs-rest threshold classification.
+    Assigns the class whose P > threshold is highest; falls back to argmax.
+    """
+    preds = []
+    for row in probas:
+        candidates = {
+            c: row[_CLS_IDX[c]]
+            for c in _CLASSES
+            if row[_CLS_IDX[c]] >= _THRESHOLDS.get(c, 0.5)
+        }
+        if candidates:
+            preds.append(max(candidates, key=candidates.get))
+        else:
+            preds.append(_CLASSES[int(np.argmax(row))])
+    return preds
 
 # Severity ranking for worst-case aggregation
 _RISK_ORDER = {"Low": 0, "Medium": 1, "High": 2}
@@ -97,8 +134,8 @@ def predict_route_risk(origin: str, destination: str, departure_time=None) -> di
     features_df, context = build_features(origin, destination, departure_time)
 
     # ── Model inference ───────────────────────────────────────────────────────
-    risk_class = _MODEL.predict(features_df)[0]
     probas     = _MODEL.predict_proba(features_df)[0]   # order matches _CLASSES
+    risk_class = _classify_with_thresholds(probas.reshape(1, -1))[0]
 
     proba_dict    = {cls: round(float(p), 4) for cls, p in zip(_CLASSES, probas)}
     confidence    = round(float(max(probas)), 4)
@@ -283,8 +320,8 @@ def predict_route_risk_segmented(
     )
 
     # ── 4. Single batch inference ─────────────────────────────────────────────
-    all_predictions = _MODEL.predict(all_features_df)
     all_probas      = _MODEL.predict_proba(all_features_df)
+    all_predictions = np.array(_classify_with_thresholds(all_probas))
 
     # ── 5. Assemble per-route results ─────────────────────────────────────────
     weather_raw   = feat_ctx["weather_raw"]
@@ -413,6 +450,7 @@ def predict_route_risk_segmented(
             "weather_mapping_used":  feat_ctx["weather_mapping_used"],
             "speed_source":          feat_ctx.get("speed_source", "unknown"),
             "fallback_speed_mph":    feat_ctx.get("fallback_speed_mph"),
+            "model_version":         feat_ctx.get("model_version", "unknown"),
         },
         "recommendation_reason": reason,
     }

@@ -1,57 +1,138 @@
 """
-feature_builder.py — Assembles the 80-feature row required by best_model_v2.pkl.
+feature_builder.py — Assembles the feature row required by the active model.
 
-Orchestrates three live API calls:
-    1. get_route()   — route geometry + midpoint coordinates + travel time
-    2. get_weather() — current weather at the route midpoint
-  (geocoding is handled implicitly inside get_route for address inputs)
+v4 (current production): 36 features including 6 leakage-free spatial aggregates.
+Falls back to v2 feature schema if v4 artefacts are not present.
 
-Then maps live API responses onto the exact v2 feature schema, in the exact
-column order read from models/feature_list_v2.txt.
+Orchestrates:
+    1. get_route()    — route geometry + midpoint + per-segment speed limits
+    2. get_weather()  — current weather at the route midpoint
+    3. Spatial query  — nearby crash counts from historical data (BallTree)
 
-OpenWeather condition → v2 weath_cond_descr_* mapping:
+OpenWeather condition → feature column mapping:
     "Clear"                         → weath_cond_descr_Clear
     "Clouds"                        → weath_cond_descr_Cloudy
     "Rain" / "Drizzle"              → weath_cond_descr_Rain
     "Snow"                          → weath_cond_descr_Snow
-    "Fog" / "Mist" / "Haze" /
-        "Smoke" / "Dust" / "Sand"   → weath_cond_descr_Fog__smog__smoke
-    "Thunderstorm" / "Squall" /
-        "Tornado"                   → weath_cond_descr_Severe_crosswinds
+    "Fog" / "Mist" / "Haze" etc.   → weath_cond_descr_Fog__smog__smoke
+                                       (falls back to Not_Reported if column pruned)
+    "Thunderstorm" etc.             → weath_cond_descr_Severe_crosswinds
+                                       (falls back to Not_Reported if column pruned)
     anything else                   → weath_cond_descr_Not_Reported
 """
 
 import sys
-import os
-from datetime import datetime, timezone
+import json
+import numpy as np
+import pandas as pd
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
-import pandas as pd
 
 BOSTON_TZ = ZoneInfo("America/New_York")
 
-# Allow imports from src/ regardless of working directory
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 from live.routes import get_route
 from live.weather import get_weather
 
-# Path to the v2 feature list — read once at import time
-_FEATURE_LIST_PATH = _REPO_ROOT / "models" / "feature_list_v2.txt"
+# ── Feature list — prefer v4, fall back to v2 ────────────────────────────────
+_FEAT_V4 = _REPO_ROOT / "models" / "feature_list_v4.txt"
+_FEAT_V2 = _REPO_ROOT / "models" / "feature_list_v2.txt"
+_FEAT_PATH = _FEAT_V4 if _FEAT_V4.exists() else _FEAT_V2
 
-with open(_FEATURE_LIST_PATH) as _f:
-    V2_FEATURES = [line.strip() for line in _f if line.strip()]
+with open(_FEAT_PATH) as _f:
+    ACTIVE_FEATURES = [line.strip() for line in _f if line.strip()]
+
+_USING_V4 = _FEAT_PATH == _FEAT_V4
+
+# ── Weather keep-cols (v4 pruned set; all allowed when on v2 fallback) ────────
+_WEATHER_KEEPCOLS_PATH = _REPO_ROOT / "models" / "weather_keep_cols_v4.json"
+if _USING_V4 and _WEATHER_KEEPCOLS_PATH.exists():
+    with open(_WEATHER_KEEPCOLS_PATH) as _f:
+        _WEATHER_KEEP_SET = set(json.load(_f))
+else:
+    _WEATHER_KEEP_SET = None   # None = keep all (v2 behaviour)
+
+# ── Spatial BallTree — loaded once at module import (v4 only) ─────────────────
+_SPATIAL_TREE      = None
+_SPATIAL_SCORES    = None    # severity score (0/1/2) per historical crash
+_SPATIAL_IS_FATAL  = None
+_SPATIAL_IS_INJURY = None
+
+if _USING_V4:
+    try:
+        from sklearn.neighbors import BallTree as _BallTree
+
+        _CACHE_PATH = _REPO_ROOT / "data" / "crashes_cache.parquet"
+        _SEVERITY_SCORE_MAP = {"No Injury": 0.0, "Injury": 1.0, "Fatal": 2.0}
+
+        print("[feature_builder] Loading historical crash data for spatial queries ...")
+        _hist = pd.read_parquet(_CACHE_PATH)
+        _hist = _hist.dropna(subset=["lat", "lon", "severity_3class"])
+        _hist_coords = np.radians(_hist[["lat", "lon"]].values.astype(np.float64))
+        _SPATIAL_TREE      = _BallTree(_hist_coords, metric="haversine")
+        _SPATIAL_SCORES    = np.array(
+            [_SEVERITY_SCORE_MAP.get(s, 0.0) for s in _hist["severity_3class"]],
+            dtype=np.float32,
+        )
+        _SPATIAL_IS_FATAL  = (_hist["severity_3class"] == "Fatal").values.astype(np.float32)
+        _SPATIAL_IS_INJURY = (_hist["severity_3class"] == "Injury").values.astype(np.float32)
+        print(f"[feature_builder] BallTree built on {len(_hist):,} historical crashes.")
+    except Exception as _e:
+        print(f"[feature_builder] WARNING: could not build spatial BallTree: {_e}")
+        _USING_V4 = False
+
+
+_EARTH_R = 6_371_009.0  # metres
+
+
+def _spatial_features_for_point(lat: float, lng: float) -> dict:
+    """
+    Query the historical crash BallTree for one (lat, lng) point.
+    Returns the 6 spatial aggregate features as a dict.
+    Returns all-zero dict if the tree was not loaded.
+    """
+    zeros = {
+        "nearby_crash_count_1km":  0.0,
+        "nearby_fatal_count_1km":  0.0,
+        "nearby_injury_count_1km": 0.0,
+        "nearby_crash_count_500m": 0.0,
+        "nearby_fatal_count_500m": 0.0,
+        "nearby_avg_severity_1km": 0.0,
+    }
+    if _SPATIAL_TREE is None:
+        return zeros
+
+    point = np.radians([[lat, lng]])
+    r1km  = 1000.0 / _EARTH_R
+    r500m =  500.0 / _EARTH_R
+
+    hits_1km,  = _SPATIAL_TREE.query_radius(point, r=r1km,  return_distance=False)
+    hits_500m, = _SPATIAL_TREE.query_radius(point, r=r500m, return_distance=False)
+
+    n1 = len(hits_1km)
+    n5 = len(hits_500m)
+
+    return {
+        "nearby_crash_count_1km":  float(n1),
+        "nearby_fatal_count_1km":  float(_SPATIAL_IS_FATAL[hits_1km].sum())  if n1 else 0.0,
+        "nearby_injury_count_1km": float(_SPATIAL_IS_INJURY[hits_1km].sum()) if n1 else 0.0,
+        "nearby_crash_count_500m": float(n5),
+        "nearby_fatal_count_500m": float(_SPATIAL_IS_FATAL[hits_500m].sum()) if n5 else 0.0,
+        "nearby_avg_severity_1km": float(_SPATIAL_SCORES[hits_1km].mean())   if n1 else 0.0,
+    }
+
 
 def _smarter_speed_default(distance_miles: float) -> float:
-    """Distance-based speed limit heuristic when live data is unavailable."""
     if distance_miles < 2.0:
         return 25.0
     if distance_miles < 10.0:
         return 35.0
     return 55.0
 
-# OpenWeather main condition → v2 feature column
+
 _WEATHER_MAP = {
     "Clear":        "weath_cond_descr_Clear",
     "Clouds":       "weath_cond_descr_Cloudy",
@@ -73,23 +154,12 @@ _WEATHER_FALLBACK = "weath_cond_descr_Not_Reported"
 
 
 def _resolve_time(departure_time):
-    """
-    Return a datetime localised to America/New_York (handles EDT/EST automatically).
-
-    Rules:
-      - None              → current wall-clock time in Boston
-      - aware datetime    → convert to Boston tz
-      - naive datetime    → treat as already Boston local time
-      - aware ISO string  → parse then convert to Boston tz
-      - naive ISO string  → treat as Boston local time
-    """
     if departure_time is None:
         return datetime.now(BOSTON_TZ)
     if isinstance(departure_time, datetime):
         if departure_time.tzinfo:
             return departure_time.astimezone(BOSTON_TZ)
         return departure_time.replace(tzinfo=BOSTON_TZ)
-    # ISO string
     dt = datetime.fromisoformat(departure_time)
     if dt.tzinfo:
         return dt.astimezone(BOSTON_TZ)
@@ -97,12 +167,10 @@ def _resolve_time(departure_time):
 
 
 def _time_features(dt: datetime) -> dict:
-    """Compute all time-derived features from a datetime."""
-    hour        = dt.hour
-    dow         = dt.weekday()   # 0=Monday
-    is_weekend  = int(dow >= 5)
-    is_rush     = int((hour in range(7, 10) or hour in range(16, 20)) and not is_weekend)
-
+    hour       = dt.hour
+    dow        = dt.weekday()
+    is_weekend = int(dow >= 5)
+    is_rush    = int((hour in range(7, 10) or hour in range(16, 20)) and not is_weekend)
     return {
         "hour_of_day": hour,
         "day_of_week": dow,
@@ -113,7 +181,6 @@ def _time_features(dt: datetime) -> dict:
 
 
 def _light_phase_features(hour: int) -> dict:
-    """Engineer light-phase flags from hour of day (NOT from ambnt_light_descr)."""
     if 7 <= hour <= 18:
         return {"light_phase_Daylight": 1, "light_phase_Dawn_Dusk": 0, "light_phase_Dark": 0}
     if hour in (5, 6, 19, 20):
@@ -123,12 +190,13 @@ def _light_phase_features(hour: int) -> dict:
 
 def _map_weather(ow_condition: str) -> tuple[str, str]:
     """
-    Map an OpenWeather condition string to a v2 feature column name.
-
-    Returns:
-        (feature_column_name, human_readable_mapping_description)
+    Map OpenWeather condition to a feature column name.
+    Falls back to _WEATHER_FALLBACK if the mapped column was pruned in v4.
     """
     col = _WEATHER_MAP.get(ow_condition, _WEATHER_FALLBACK)
+    # If using v4 pruned schema and this column was dropped, use fallback
+    if _WEATHER_KEEP_SET and col not in _WEATHER_KEEP_SET:
+        col = _WEATHER_FALLBACK
     desc = f"'{ow_condition}' → {col}"
     return col, desc
 
@@ -140,29 +208,24 @@ def build_segment_features(
     speed_limits_per_point: list | None = None,
 ) -> tuple:
     """
-    Build an N-row feature DataFrame for a list of sample points along a route.
+    Build an N-row feature DataFrame for a list of sample points.
 
-    Uses ONE weather call for the entire route (weather doesn't change every 500 m)
-    and applies shared time features to all rows.  Only lat/lng (and speed_limit)
-    differ per row.
+    Uses ONE weather call at route midpoint; spatial features queried per point.
 
     Args:
-        route (dict): Return value of get_route() — must contain default_route.
-        sample_points (list): List of (lat, lng) tuples, one per segment sample.
-        departure_time: ISO 8601 string, datetime object, or None (= now).
-        speed_limits_per_point (list | None): Per-point speed limit estimates
-            (same length as sample_points).  If None, falls back to the
-            distance-based heuristic.
+        route (dict): Return value of get_route().
+        sample_points (list): List of (lat, lng) tuples.
+        departure_time: ISO 8601 string, datetime, or None (= now).
+        speed_limits_per_point (list | None): Per-point speed estimates.
 
     Returns:
-        features_df (pd.DataFrame): N-row DataFrame in exact V2_FEATURES column order.
-        context (dict): Transparency dict — weather used, time features, num points.
+        features_df (pd.DataFrame): N-row DataFrame in ACTIVE_FEATURES column order.
+        context (dict): Transparency dict.
     """
     dt = _resolve_time(departure_time)
     print(f"[feature_builder] segment mode | Boston time: {dt.strftime('%Y-%m-%d %H:%M %Z')}, "
-          f"points={len(sample_points)}")
+          f"points={len(sample_points)}, model=v{'4' if _USING_V4 else '2/3'}")
 
-    # ── Weather: one call at route midpoint ───────────────────────────────────
     default_route = route["default_route"]
     midpoint      = default_route["midpoint_coords"]
     if midpoint is None:
@@ -170,42 +233,47 @@ def build_segment_features(
     mid_lat = midpoint["lat"]
     mid_lng = midpoint["lng"]
 
-    print(f"[feature_builder] Fetching weather at midpoint ({mid_lat}, {mid_lng}) ...")
-    weather       = get_weather(lat=mid_lat, lng=mid_lng)
-    ow_condition  = weather["condition"]
+    print(f"[feature_builder] Fetching weather at midpoint ({mid_lat:.4f}, {mid_lng:.4f}) ...")
+    weather              = get_weather(lat=mid_lat, lng=mid_lng)
+    ow_condition         = weather["condition"]
     weather_col, weather_mapping_desc = _map_weather(ow_condition)
-    print(f"[feature_builder] Weather mapping: {weather_mapping_desc}")
+    print(f"[feature_builder] Weather: {weather_mapping_desc}")
 
-    # ── Time features: shared across all points ───────────────────────────────
-    time_feats  = _time_features(dt)
-    light_feats = _light_phase_features(time_feats["hour_of_day"])
+    time_feats   = _time_features(dt)
+    light_feats  = _light_phase_features(time_feats["hour_of_day"])
+    route_dist   = default_route.get("distance_miles", 5.0)
+    fallback_spd = _smarter_speed_default(route_dist)
 
-    # Fallback speed (distance-based) used when per-point data is absent
-    route_dist = default_route.get("distance_miles", 5.0)
-    fallback_speed = _smarter_speed_default(route_dist)
-
-    # ── Build one row per sample point ────────────────────────────────────────
     rows = []
     for i, (lat, lng) in enumerate(sample_points):
-        row = {feat: 0 for feat in V2_FEATURES}
-        row["lat"]         = lat
-        row["lon"]         = lng
+        row = {feat: 0 for feat in ACTIVE_FEATURES}
+        row["lat"] = lat
+        row["lon"] = lng
 
-        # Per-point speed limit (from Google traffic intervals or distance fallback)
-        if speed_limits_per_point and i < len(speed_limits_per_point) and speed_limits_per_point[i] is not None:
+        # Speed limit
+        if (speed_limits_per_point
+                and i < len(speed_limits_per_point)
+                and speed_limits_per_point[i] is not None):
             row["speed_limit"] = speed_limits_per_point[i]
         else:
-            row["speed_limit"] = fallback_speed
+            row["speed_limit"] = fallback_spd
 
         row.update(time_feats)
         row.update(light_feats)
+
+        # Weather
         if weather_col in row:
             row[weather_col] = 1
         else:
             row[_WEATHER_FALLBACK] = 1
+
+        # Spatial features (v4 only; no-op if tree not loaded)
+        if _USING_V4:
+            row.update(_spatial_features_for_point(lat, lng))
+
         rows.append(row)
 
-    features_df = pd.DataFrame(rows)[V2_FEATURES]
+    features_df = pd.DataFrame(rows)[ACTIVE_FEATURES]
 
     context = {
         "weather_raw":          weather,
@@ -216,95 +284,64 @@ def build_segment_features(
         "local_hour":           time_feats["hour_of_day"],
         "num_points":           len(sample_points),
         "speed_source":         "per_segment" if speed_limits_per_point else "distance_heuristic",
-        "fallback_speed_mph":   fallback_speed,
+        "fallback_speed_mph":   fallback_spd,
+        "model_version":        "v4" if _USING_V4 else "v2/v3",
     }
-
     return features_df, context
 
 
 def build_features(origin: str, destination: str, departure_time=None) -> tuple:
     """
-    Orchestrate live API calls and assemble the 80-feature DataFrame row
-    required by best_model_v2.pkl.
+    Assemble the feature DataFrame for a whole-route (non-segmented) prediction.
 
-    Args:
-        origin (str): Address or place name for the start of the route.
-        destination (str): Address or place name for the end of the route.
-        departure_time: ISO 8601 string, datetime object, or None (= now).
-
-    Returns:
-        features_df (pd.DataFrame): Single-row DataFrame with all 80 v2 features
-                                    in the exact order from feature_list_v2.txt.
-        context (dict): Transparency dict with route info, weather info, and
-                        mapping decisions used to build the feature row.
-
-    Raises:
-        EnvironmentError: If a required API key is missing.
-        requests.ConnectionError: On network failures.
-        requests.HTTPError: On non-200 API responses.
-        ValueError: If the route API returns no results.
+    Spatial features are computed at the route midpoint.
     """
     dt = _resolve_time(departure_time)
     print(f"[feature_builder] Local Boston time: {dt.strftime('%Y-%m-%d %H:%M %Z')}, hour={dt.hour}")
 
-    # ── Step 1: Route (also implicitly geocodes the addresses) ────────────────
     print(f"[feature_builder] Fetching route: '{origin}' → '{destination}' ...")
     route = get_route(origin, destination)
 
     default_route = route["default_route"]
-    midpoint      = default_route["midpoint_coords"]   # {"lat": ..., "lng": ...}
-
+    midpoint      = default_route["midpoint_coords"]
     if midpoint is None:
-        raise ValueError(
-            "Route API returned no decoded polyline — cannot determine midpoint. "
-            "Check that the origin/destination are valid driving locations."
-        )
+        raise ValueError("Route returned no decoded polyline — cannot determine midpoint.")
 
     mid_lat = midpoint["lat"]
     mid_lng = midpoint["lng"]
-    print(f"[feature_builder] Route midpoint: lat={mid_lat}, lng={mid_lng}")
+    print(f"[feature_builder] Route midpoint: lat={mid_lat:.4f}, lng={mid_lng:.4f}")
 
-    # ── Step 2: Weather at midpoint ───────────────────────────────────────────
-    print(f"[feature_builder] Fetching weather at midpoint ...")
-    weather = get_weather(lat=mid_lat, lng=mid_lng)
-    ow_condition = weather["condition"]   # e.g. "Clear", "Rain", "Snow"
+    print(f"[feature_builder] Fetching weather ...")
+    weather      = get_weather(lat=mid_lat, lng=mid_lng)
+    ow_condition = weather["condition"]
 
-    # ── Step 3: Map weather to v2 feature ─────────────────────────────────────
     weather_col, weather_mapping_desc = _map_weather(ow_condition)
-    print(f"[feature_builder] Weather mapping: {weather_mapping_desc}")
+    print(f"[feature_builder] Weather: {weather_mapping_desc}")
 
-    # ── Step 4: Time features ─────────────────────────────────────────────────
     time_feats  = _time_features(dt)
     light_feats = _light_phase_features(time_feats["hour_of_day"])
 
-    # ── Step 5: Assemble feature dict — start with all zeros ─────────────────
-    row = {feat: 0 for feat in V2_FEATURES}
+    row = {feat: 0 for feat in ACTIVE_FEATURES}
 
-    # Location
     row["lat"] = mid_lat
     row["lon"] = mid_lng
-
-    # Road property — use distance-based heuristic (no per-segment data in non-segmented path)
     row["speed_limit"] = _smarter_speed_default(default_route["distance_miles"])
 
-    # Time
     row.update(time_feats)
-
-    # Light phase
     row.update(light_feats)
 
-    # Weather (only the mapped column gets a 1; all others stay 0)
     if weather_col in row:
         row[weather_col] = 1
     else:
-        # Fallback if sanitized name doesn't match exactly
         row[_WEATHER_FALLBACK] = 1
-        weather_mapping_desc += f" (fallback to {_WEATHER_FALLBACK}: column not in schema)"
+        weather_mapping_desc += f" (fallback to {_WEATHER_FALLBACK})"
 
-    # ── Step 6: Build DataFrame in exact V2_FEATURES order ───────────────────
-    features_df = pd.DataFrame([row])[V2_FEATURES]
+    # Spatial features at midpoint
+    if _USING_V4:
+        row.update(_spatial_features_for_point(mid_lat, mid_lng))
 
-    # ── Step 7: Build context dict ────────────────────────────────────────────
+    features_df = pd.DataFrame([row])[ACTIVE_FEATURES]
+
     context = {
         "origin":           origin,
         "destination":      destination,
@@ -321,6 +358,6 @@ def build_features(origin: str, destination: str, departure_time=None) -> tuple:
         "speed_limit_used": _smarter_speed_default(default_route["distance_miles"]),
         "route_raw":        route,
         "weather_raw":      weather,
+        "model_version":    "v4" if _USING_V4 else "v2/v3",
     }
-
     return features_df, context
